@@ -284,13 +284,25 @@ class FpsOverviewPage(_Page):
             return
         grade = ctx.get("grade") or "-"
         dropped = int(ctx.get("dropped") or 0)
+        drop_pct = float(ctx.get("dropped_pct") or 0.0)
         if ctx.get("stutter_now"):
             self.set_verdict(
                 "🔴 刚才真顿挫 · 帧率砸穿局部中位数 65% 且耗时跳变 ≥8ms",
                 "danger", "病历卡已给出病因与改法")
+        elif dropped > 0 and drop_pct >= 2.0:
+            # 【v1.1.1】顿挫占比够高时不许再写「全程丝滑」：
+            # 截图里的实际情况是「95 帧 · C 级 · 顿挫 72 次」却写着全程丝滑。
+            self.set_verdict(
+                "🟠 阵发性顿挫 %d 次（占比 %.1f%%）· 平均 %.0f 帧 · %s 级"
+                % (dropped, drop_pct, avg, grade),
+                "warn", "点曲线上的红点看病因；也可先按「一键问 AI」把报告发给专家")
+        elif dropped > 0:
+            self.set_verdict(
+                "🟢 基本流畅 · %.0f 帧 · %s 级 · 偶发顿挫 %d 次" % (avg, grade, dropped),
+                "ok", "")
         else:
             self.set_verdict(
-                "🟢 全程丝滑 · %.0f 帧 · %s 级 · 顿挫 %d 次" % (avg, grade, dropped),
+                "🟢 全程丝滑 · %.0f 帧 · %s 级 · 顿挫 0 次" % (avg, grade),
                 "ok", "")
 
     def badge(self, hw, ctx):

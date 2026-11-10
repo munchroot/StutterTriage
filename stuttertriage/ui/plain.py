@@ -96,6 +96,12 @@ PLAIN_RULES = (
     ("CPU 核心状态", {LEVEL_DANGER, LEVEL_WARN},
      "CPU 单核忙不过来了（一个核在死扛）",
      "调低游戏里的【同屏人数/视野距离/阴影】", LEVEL_DANGER),
+    # 【v1.1.1】v1.1.0 新增的第 12 维（pagefile 证据链）原先没有登记人话，
+# 于是它判 WARN 时 explain() 直接落到兜底，屏幕上只剩「帧率掉了一下」。
+    ("内存-磁盘交换", {LEVEL_DANGER, LEVEL_WARN},
+     "内存不够用，系统正在和硬盘倒腾数据（页面文件交换）",
+     "关掉高占内存的后台（浏览器/录屏/壁纸）；内存小就加内存，页面文件放 SSD",
+     LEVEL_DANGER),
     ("页面文件换入", {LEVEL_DANGER, LEVEL_WARN},
      "内存不够用了，系统在拿硬盘当内存顶",
      "关掉后台程序，或把游戏内【内存/纹理】占用调低", LEVEL_WARN),
@@ -113,8 +119,15 @@ PLAIN_RULES = (
      "属于游戏优化问题，可尝试关闭后台录制/叠加层", LEVEL_WARN),
 )
 
-# 兜底：症状本身（不是病因）
-FALLBACK_SYMPTOM = ("帧率掉了一下", "把画质调低一档通常能缓解", LEVEL_WARN)
+# 兜底：12 维归因**全都没命中**时说的话。
+# 【v1.1.1】旧文案是「帧率掉了一下 / 把画质调低一档通常能缓解」——
+# 前者只是复述症状（用户已经看见了），后者让画面变差却不一定有用。
+# 现在如实说明「没找到已知诱因」，并把用户导向两条真正有用的下一步：
+#   · 一键问 AI 导出完整证据链交给专家（本版新增功能）
+#   · 改独占全屏再复现一次，用来验证 DWM 合成是不是元凶
+FALLBACK_SYMPTOM = ("未命中已知诱因（可能是驱动/引擎内部停顿或外部进程抢占）",
+                    "试试「🤖 一键问 AI」导出报告求助，或改独占全屏再复现对比",
+                    LEVEL_WARN)
 
 
 def row_level(row):
@@ -139,6 +152,12 @@ def worst_rows(rows):
     for r in rows:
         if row_level(r) == LEVEL_DANGER:
             return r
+    # 【v1.1.1】兜底：仍然没有任何规则命中，但确实存在 WARN 行时，
+    # 把它交给 explain() 的兜底文案去解释 —— 否则会出现
+    # 「12 维表格里有橙色行，顶部横幅却说运行很稳」的直接矛盾。
+    for r in rows:
+        if row_level(r) == LEVEL_WARN:
+            return r
     return None
 
 
@@ -159,7 +178,9 @@ def explain(rows):
     prefix = getattr(row, "dim", "") or ""
     for p, levels, cause, advice, lvl in PLAIN_RULES:
         if prefix.startswith(p) and row_level(row) in levels:
-            return _pack(lvl, cause, advice, row)
+            # 行本身是 DANGER 时一律用红色（规则里的 lvl 只是该维度的默认档）
+            lv = LEVEL_DANGER if row_level(row) == LEVEL_DANGER else lvl
+            return _pack(lv, cause, advice, row)
     cause, advice, lvl = FALLBACK_SYMPTOM
     return _pack(lvl if row_level(row) == LEVEL_DANGER else LEVEL_WARN, cause, advice, row)
 

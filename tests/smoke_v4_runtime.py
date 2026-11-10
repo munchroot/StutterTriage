@@ -166,7 +166,7 @@ def main():
     print("== B. 建窗（规范一：240px 导航卡 + QStackedWidget）==")
     win = F.StutterTriageWindow()
     pump(app, 200)
-    check("窗口标题含版本号", "StutterTriage 1.0.0" in win.windowTitle(), win.windowTitle())
+    check("窗口标题含版本号", "StutterTriage 1.1." in win.windowTitle(), win.windowTitle())
     check("左栏固定 240px", win.sidebar.width() == 240 and win.sidebar.maximumWidth() == 240,
           str(win.sidebar.width()))
     check("5 张大号导航卡", len(win.nav_tabs) == 5, str(len(win.nav_tabs)))
@@ -241,10 +241,12 @@ def main():
           ("FPS" in win.nav_tabs[0].lbl_badge.text()
            and "GHz" in win.nav_tabs[1].lbl_badge.text()),
           win.nav_tabs[0].lbl_badge.text() + " | " + win.nav_tabs[1].lbl_badge.text())
+    # v1.1.1：头部结论不再无条件写「全程丝滑」——有顿挫时必须说顿挫，
+    # 因此这里只断言「是实时文案且与顿挫计数自洽」。
+    verdict_txt = win.pages[0].lbl_verdict.text()
+    has_drop = any(k in verdict_txt for k in ("顿挫", "丝滑", "流畅"))
     check("总览页头部结论也是实时文案",
-          "等待数据" not in win.pages[0].lbl_verdict.text()
-          and "丝滑" in win.pages[0].lbl_verdict.text(),
-          win.pages[0].lbl_verdict.text())
+          "等待数据" not in verdict_txt and has_drop, verdict_txt)
     # v1.0.1：数值已移到独立数值行，结论行只给一句短结论
     bn_txt = win.lbl_bottleneck.fullText() if hasattr(win.lbl_bottleneck, "fullText") \
         else win.lbl_bottleneck.text()

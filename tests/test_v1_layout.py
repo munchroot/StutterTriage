@@ -114,7 +114,8 @@ def test_brand():
     check("__version__ 与 1.1.x 一致", stuttertriage.__version__.startswith("1.1."),
           stuttertriage.__version__)
     title = win.windowTitle()
-    check("窗口标题 = StutterTriage 1.0.0 …", title.startswith("StutterTriage 1.0.0"), title)
+    check("窗口标题带当前版本号",
+          title.startswith("StutterTriage %s" % stuttertriage.__version__), title)
     check("标题里没有旧品牌「卡顿减减」", "卡顿减减" not in title, title)
     check("侧栏 LOGO 也没有旧品牌", "卡顿减减" not in win.lbl_logo.text(), win.lbl_logo.text())
     with open(os.path.join(ROOT, "build_tools", "version_info.txt"), "r", encoding="utf-8") as f:

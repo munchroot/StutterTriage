@@ -30,13 +30,14 @@ from PyQt6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QMenu, QMes
                              QProgressBar, QPushButton, QStackedWidget, QTabWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
+from .. import __version__
 from .. import aiask
 from .. import theme as T
 from ..analysis import SnapshotDiffInspector
 from ..config import Config
 from ..consts import (DATA_SOURCE_LABEL, DATA_SOURCE_REAL, DATA_SOURCE_SIM,
                       datasource_color)
-from ..stats import bottleneck, dropped_verdict, fps_verdict, window_stats
+from ..stats import bottleneck, dropped_verdict, fps_verdict, motion_verdict, window_stats
 from ..theme import (CURRENT_THEME, THEME_PRESETS, attach_shadow,
                      bind_globals as _bind_theme_globals)
 from ..utils import DIAG
@@ -88,7 +89,9 @@ class StutterTriageWindow(StutterTriageWindowBase):
     # 版面
     # ================================================================
     def _init_ui(self):
-        self.setWindowTitle("StutterTriage 1.0.0 · 游戏卡顿一站式体检台")
+        # 【v1.1.1】标题里的版本号必须跟着 __version__ 走 ——
+        # 之前写死 "1.0.0"，升级到 1.1.0 后标题栏还骗人（用户截图即此）。
+        self.setWindowTitle("StutterTriage %s · 游戏卡顿一站式体检台" % __version__)
         self._apply_global_stylesheet()
         self._stat_cache = None
         self._last_rows = []
@@ -511,9 +514,12 @@ class StutterTriageWindow(StutterTriageWindowBase):
         st = self._stat_cache or {}
         avg = float(st.get("avg_fps") or 0.0)
         ctx["avg_fps"] = avg
-        ctx["verdict"] = fps_verdict(avg) if avg > 0 else "等待数据"
         ctx["grade"] = st.get("grade", "-")
         ctx["dropped"] = st.get("dropped", 0)
+        ctx["dropped_pct"] = float(st.get("dropped_pct") or 0.0)
+        # 状态词同时看「平均帧」与「顿挫占比」：95 帧 + 7.2% 顿挫
+        # 不能叫「流畅游玩」（v1.1.1 修自相矛盾）
+        ctx["verdict"] = motion_verdict(avg, ctx["dropped_pct"], st.get("low1_fps"))
         ctx["stutter_now"] = bool(st.get("stutter_now"))
         return ctx
 
@@ -542,6 +548,10 @@ class StutterTriageWindow(StutterTriageWindowBase):
         ok, msg = self._pending_status
         if not started:
             msg = "未开始采集（点「▶ 开始采集」）"
+        elif self.is_paused:
+            # 【v1.1.1】暂停时徽章会冻结在「曲线已清空，重新采样中」这类历史文案上，
+            # 让人以为还在跑。直接标成「已暂停」，与按钮状态一致。
+            msg = "已暂停 · %s" % msg
         color = CURRENT_THEME.green if ok else CURRENT_THEME.warn
         dropped = self.q.take_dropped()
         if dropped:
@@ -728,15 +738,27 @@ class StutterTriageWindow(StutterTriageWindowBase):
             # 【v1.0.1 修矛盾文案】低帧率（<30 帧 或 C 级）时严禁再拼「全程丝滑」——
             # 帧率低但没触发顿挫，正确说法是「帧率偏低」。
             avg_now = float(st.get("avg_fps", 0.0) or 0.0)
-            low_fps = avg_now < 30.0 or grade in ("C", "D")
-            if low_fps:
+            drop_pct = float(st.get("dropped_pct", 0.0) or 0.0)
+            grade_label = st.get("grade_label", "运行中")
+            # 【v1.1.1】把「帧率低」和「抖动大」分开说：
+            # 平均 95 帧却判 C 级时，原因是顿挫占比高，不能写「帧率偏低」
+            # （旁边的大数字就是 95，文案自打脸）。
+            if avg_now < 30.0:
                 self.banner_text.setText(
                     "🟠 当前 %.0f 帧 · %s（%s 级）· 帧率偏低"
-                    % (avg_now, st.get("grade_label", "运行中"), grade))
+                    % (avg_now, grade_label, grade))
+            elif grade in ("C", "D") and drop_pct >= 2.0:
+                self.banner_text.setText(
+                    "🟠 当前 %.0f 帧 · 顿挫 %d 次(%.1f%%)（%s 级）· 平均帧不低，但抖动大"
+                    % (avg_now, int(st.get("dropped") or 0), drop_pct, grade))
+            elif grade in ("C", "D"):
+                self.banner_text.setText(
+                    "🟠 当前 %.0f 帧 · %s（%s 级）· 帧率偏低"
+                    % (avg_now, grade_label, grade))
             else:
                 self.banner_text.setText(
                     "🟢 当前 %.0f 帧 · %s（%s 级）· 全程丝滑"
-                    % (avg_now, st.get("grade_label", "运行中"), grade))
+                    % (avg_now, grade_label, grade))
             # 【v1.0.0】没触发严格顿挫 → 病历卡回到 idle 占位（不再 hide：
             # hide 会让下面的折线图瞬间长高 110px，整页上下跳）
             if self.selected_frame is None:

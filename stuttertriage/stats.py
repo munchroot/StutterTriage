@@ -400,6 +400,41 @@ def fps_verdict(avg_fps):
     return "建议降画质"
 
 
+def motion_verdict(avg_fps, dropped_pct=0.0, low1_fps=None):
+    """
+    导航卡 / 总览页的那一句「运行状态」人话（v1.1.1 修正自相矛盾）。
+
+    【为什么不能只用平均帧】截图里的真实场景：平均 95 帧、1% Low 7 帧、
+    顿挫 72 次（占比 7.2%）—— 旧实现按平均帧给出「流畅游玩 / 全程丝滑」，
+    与屏幕上那一片红点和病历卡完全打脸。玩家对这个软件的第一印象就来自这句话，
+    所以判定必须同时看「抖不抖」：
+      · 顿挫占比 ≥10%，或 1% Low 低于平均帧 25%  → 阵发性顿挫
+      · 顿挫占比 ≥3%                            → 偶发顿挫
+      · 否则退回按平均帧分档（电竞级丝滑 / 流畅游玩 / 建议降画质）
+    """
+    try:
+        avg = float(avg_fps or 0.0)
+    except (TypeError, ValueError):
+        avg = 0.0
+    if avg <= 0:
+        return "等待数据"
+    try:
+        drop = float(dropped_pct or 0.0)
+    except (TypeError, ValueError):
+        drop = 0.0
+    low1 = None
+    try:
+        if low1_fps is not None:
+            low1 = float(low1_fps)
+    except (TypeError, ValueError):
+        low1 = None
+    if drop >= 10.0 or (low1 is not None and low1 < avg * 0.25):
+        return "阵发性顿挫"
+    if drop >= 3.0:
+        return "偶发顿挫"
+    return fps_verdict(avg)
+
+
 def dropped_verdict(dropped):
     """漏帧卡底部微字：0 次绿色「零漏帧」，>5 次红色告警"""
     if dropped <= 0:
