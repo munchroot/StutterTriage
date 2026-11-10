@@ -570,14 +570,49 @@ class FrameStore:
 
         【性能】按进程分片索引：锁定目标后直接取该分片，
         避免每 tick 对 20000 帧做 Python 级列表推导（实测省 ~5ms/tick）。
+
+        【v1.1.2 多选】target 允许是 list/tuple：把多个进程的帧按 wall_ts 合并，
+        用于「同时看游戏 + 启动器/加速器」，或 `<unknown>` + 真实进程名并存的情况。
         """
         self._ensure_index()
+        if isinstance(target, (list, tuple, set)):
+            keys = []
+            for item in target:
+                k = str(item or "").strip().lower()
+                if k and k not in keys:
+                    keys.append(k)
+            if not keys:
+                return []
+            if len(keys) == 1:
+                shard = self._by_app.get(keys[0])
+                return list(shard) if shard else []
+            out = []
+            for k in keys:
+                shard = self._by_app.get(k)
+                if shard:
+                    out.extend(shard)
+            out.sort(key=lambda f: f.wall_ts)
+            return out
         if not target or target in ("all", "自动锁定主游戏"):
             return list(self.frames)
-        shard = self._by_app.get(target.lower())
+        shard = self._by_app.get(str(target).lower())
         if not shard:
             return []
         return list(shard)
+
+    def game_frames(self):
+        """
+        只返回「像游戏」的帧：剔除 dwm.exe / explorer.exe 等桌面合成类进程。
+
+        【为什么必须要有】在桌面时 dwm 会按显示器刷新率持续 Present（本机 ~95 FPS），
+        旧实现 `visible_frames(None)` 把**全部**帧当游戏帧画出来，于是桌面上也能看到
+        「95 帧 + 周期性尖峰」——那其实是桌面合成器的抖动，不是游戏（用户截图即此）。
+        【注意】`<unknown>` 不能剔除：全屏独占的游戏（如 GTA5）常常正是以
+        `<unknown>` 上报 Application，剔掉就等于永远侦测不到。
+        """
+        self._ensure_index()
+        return [f for f in self.frames
+                if (f.app or "").lower() not in NON_GAME_PROCESSES]
 
     def dominant_app(self):
         """

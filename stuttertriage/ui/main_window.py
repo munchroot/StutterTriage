@@ -26,7 +26,7 @@ import numpy as np
 
 from PyQt6.QtGui import QAction
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox,
+from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox,
                              QProgressBar, QPushButton, QStackedWidget, QTabWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
@@ -52,6 +52,7 @@ from .pages import build_pages, gpu_load_pct
 from .plain import GRADE_COLOR, explain
 from .widgets import ElidedLabel
 from .kv import KVGrid
+from .multiselect import MultiSelectGames
 
 try:                                    # 新算法统一入口（缺失时优雅降级为「不判定顿挫」）
     from ..stats import is_stutter_frame
@@ -98,6 +99,7 @@ class StutterTriageWindow(StutterTriageWindowBase):
         self._pro_dialog = None
         self._diag_prev_frame = None
         self._auto_diag_idx = None        # 已自动弹过病历卡的顿挫帧（防闪烁）
+        self._float_win = None            # v1.1.2 悬浮窗（惰性创建）
         self._diag_strict = None          # 病历卡的顿挫判定（选中那一刻锁死，不随后续刷新翻转）
         self._fps_mode = MODE_FPS
         self._diag_render_ts = 0.0        # 上次全量诊断渲染时刻（节流用）
@@ -117,6 +119,13 @@ class StutterTriageWindow(StutterTriageWindowBase):
         self._build_hw_panel()
         self._build_gear_menu()
         self._apply_global_stylesheet()
+        # 【v1.1.2】启动后按配置拉起悬浮窗。延迟 600ms：首帧渲染/ETW 探测优先，
+        # 避免一开机就多一个置顶窗口抢焦点。
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(600, self._apply_float_settings)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- 左栏
     def _build_sidebar(self):
@@ -159,9 +168,10 @@ class StutterTriageWindow(StutterTriageWindowBase):
         self.lbl_target_caption.setStyleSheet(
             "color: %s; font-size: 11px; font-weight: bold;" % CURRENT_THEME.dim)
         sb.addWidget(self.lbl_target_caption)
-        self.combo_procs = QComboBox()
-        self.combo_procs.addItem("自动锁定主游戏")
-        self.combo_procs.currentTextChanged.connect(self._on_target_changed)
+        # 【v1.1.2】单选下拉 → 多选菜单：有的游戏枚举不到窗口 / 以 <unknown> 上报，
+        # 单选时用户根本选不到它；多选还能同时盯「游戏 + 启动器」。
+        self.combo_procs = MultiSelectGames()
+        self.combo_procs.selectionChanged.connect(self._on_target_changed)
         sb.addWidget(self.combo_procs)
 
         self.btn_pause = QPushButton("▶ 开始采集")
@@ -204,15 +214,8 @@ class StutterTriageWindow(StutterTriageWindowBase):
         self.btn_mark.clicked.connect(self._on_manual_mark)
         sb.addWidget(self.btn_mark)
 
-        # ---- v1.1.0 小改动：一键问 AI（导出桌面 CSV + 弹出可复制提示词）----
-        self.btn_ask_ai = QPushButton("🤖 一键问 AI")
-        self.btn_ask_ai.setObjectName("NavButton")
-        self.btn_ask_ai.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_ask_ai.setToolTip(
-            "把本次体检导出成桌面 CSV，并弹出一段可复制的「AI 电脑专家」提示词"
-            "（复制后粘到任意对话窗口即可）")
-        self.btn_ask_ai.clicked.connect(self._on_ask_ai)
-        sb.addWidget(self.btn_ask_ai)
+        # 【v1.1.2】「一键问 AI」已移到顶栏横幅右侧（更显眼），侧栏不再重复放；
+        # 齿轮菜单里仍保留同名入口，方便老用户。
 
         self.lbl_hotkey = ElidedLabel("")
         self.lbl_hotkey.setStyleSheet("color: %s; font-size: 10px;" % CURRENT_THEME.dim)
@@ -301,6 +304,26 @@ class StutterTriageWindow(StutterTriageWindowBase):
         mid.addWidget(self.banner_text)
         mid.addStretch()
         bl.addLayout(mid, stretch=1)
+
+        # 【v1.1.2】一键问 AI：放在顶栏横幅最右侧 —— 用户反馈「藏在左栏底部看不见」。
+        # 它是本软件最常用的下一步动作（拿报告去问 AI），所以给最显眼的位置。
+        self.btn_ask_ai = QPushButton("🤖 一键问 AI")
+        self.btn_ask_ai.setObjectName("BannerAskAi")
+        self.btn_ask_ai.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ask_ai.setMinimumHeight(34)
+        self.btn_ask_ai.setToolTip(
+            "导出本次体检到桌面 CSV，并弹出一段可复制的「AI 电脑专家」提示词")
+        self.btn_ask_ai.clicked.connect(self._on_ask_ai)
+        bl.addWidget(self.btn_ask_ai, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # 【v1.1.2】悬浮窗开关（顶栏可见）：点一下显示/隐藏那个置顶小窗
+        self.btn_float = QPushButton("◱ 浮窗：开")
+        self.btn_float.setObjectName("BannerFloat")
+        self.btn_float.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_float.setMinimumHeight(34)
+        self.btn_float.setToolTip("显示/隐藏悬浮窗（透明度在设置页调）")
+        self.btn_float.clicked.connect(self._on_toggle_float)
+        bl.addWidget(self.btn_float, 0, Qt.AlignmentFlag.AlignVCenter)
 
         bn = QVBoxLayout()
         bn.setSpacing(3)
@@ -565,24 +588,39 @@ class StutterTriageWindow(StutterTriageWindowBase):
         if self.is_paused:
             return
 
-        # ---- 目标进程 ----
-        if self.target_app == "自动锁定主游戏":
+        # ---- 目标进程（v1.1.2：支持多选）----
+        if not getattr(self, "target_apps", None):
+            # 自动模式：主游戏取自近期帧数最多的「非桌面」进程
             dom = self.store.dominant_app()
             if dom and dom != self._auto_dom:
                 self._auto_dom = dom
         else:
             self._auto_dom = None
-        eff = self.target_app
-        if eff == "自动锁定主游戏":
-            eff = self._auto_dom
+        eff = self._eff_target()
         # ---- v1.1.0：把锁定的游戏进程名同步给硬件线程 ----
         # 硬件线程据此从 `\Process(*)\Working Set` / `Page Faults/sec` 里
         # 挑出目标进程的真实内存足迹与缺页速率（换进程时自动跟着变）。
         try:
-            self.hw_engine.set_target_app("" if not eff or eff == "自动锁定主游戏" else eff)
+            first = eff if isinstance(eff, str) else ((eff or [None])[0])
+            self.hw_engine.set_target_app(first or "")
         except Exception:
             pass
-        frames = self.store.visible_frames(eff)
+        if eff:
+            frames = self.store.visible_frames(eff)
+        else:
+            # 【v1.1.2】自动模式且**没锁定到任何游戏**时，绝不能走
+            # `visible_frames(None)` —— 那会把 dwm.exe 的桌面合成帧也算进来，
+            # 于是桌面上显示「95 FPS + 周期性尖峰」（用户截图里的怪现象）。
+            # 这里只取「像游戏」的帧（见 FrameStore.game_frames）。
+            frames = self.store.game_frames()
+        if not frames and not getattr(self, "target_apps", None):
+            # 【v1.1.2 桌面误采】自动模式且没有任何「游戏帧」时，不要把桌面合成器
+            # （dwm/explorer）的帧当成游戏数据 —— 否则桌面上会显示 ~95 FPS 和
+            # 一堆周期性尖峰（用户截图里的「奇怪情况」就是它）。
+            frames = self.store.game_frames()
+        if not frames:
+            self._show_no_game_idle(started)
+            return
         page_idx = self.stack.currentIndex()
 
         if len(frames) < 2:
@@ -686,6 +724,8 @@ class StutterTriageWindow(StutterTriageWindowBase):
                 DIAG.report("_refresh_ui_inner.page", ex)
         if self._env_tick % self.BADGE_POLL == 0:
             self._refresh_nav_badges(hw, ctx)
+            # 悬浮窗：与徽章同频更新（0.1~0.2s 级），几乎零成本
+            self._update_float_state(st, eff if not isinstance(eff, list) else "多选 %d 个" % len(eff))
 
         # ---- 瓶颈天平（改进建议书 四.2）----
         bn = bottleneck(hw, ctx.get("gpu_pct"), getattr(hw, "cpu_total", None))
@@ -847,10 +887,62 @@ class StutterTriageWindow(StutterTriageWindowBase):
         return best
 
     def _eff_target(self):
-        eff = self.target_app
-        if eff == "自动锁定主游戏":
-            eff = self._auto_dom
-        return eff
+        """
+        当前生效的目标：返回 str（单进程）/ list（多选）/ None（自动但没锁定）。
+
+        v1.1.2 起左侧是多选控件，target_apps 为空表示「自动锁定主游戏」。
+        """
+        apps = [a for a in (getattr(self, "target_apps", None) or []) if a]
+        if apps:
+            return apps if len(apps) > 1 else apps[0]
+        return self._auto_dom or None
+
+    def _show_no_game_idle(self, started):
+        """
+        没有游戏帧时的中性态（v1.1.2）。
+
+        【为什么必须有】以前这里会继续把所有帧（含 dwm.exe）当游戏数据画出来：
+        在桌面上也能看到 ~95 FPS 的曲线和「顿挫 72 次」，用户会以为软件测错了。
+        现在明确区分「采集在跑，但当前没有游戏进程在产帧」，并给出可执行的下一步。
+        """
+        # 【v1.1.2】全屏独占的游戏（如 GTA5）经常以 <unknown> 上报 Application，
+        # 或在 EnumWindows 里根本看不到窗口 —— 这时明确点名「勾 <unknown>」，
+        # 否则用户只会看到「未检测到游戏」而不知道该点哪里。
+        has_unknown = False
+        try:
+            has_unknown = any((f.app or "") == "<unknown>" for f in self.store.frames)
+        except Exception:
+            has_unknown = False
+        if started and has_unknown:
+            self.banner_text.setText(
+                "🟡 检测到 <unknown> 产帧 —— 多半是全屏独占的游戏（如 GTA5）："
+                "请点左侧「游戏」→ 手动添加 <unknown>，即可把它当游戏追踪")
+        elif started:
+            self.banner_text.setText(
+                "🟡 未检测到游戏进程 · 桌面合成帧(dwm)已忽略 —— "
+                "请用左侧「游戏」菜单手动勾选，或手动添加进程名 / <unknown>")
+        else:
+            self.banner_text.setText("🟡 未开始采集 —— 点左侧「▶ 开始采集」开始采样")
+        self._set_style(self.banner_frame, self._banner_qss(CURRENT_THEME.warn))
+        if getattr(self, "_had_frames", True):
+            self._had_frames = False
+            self._reset_cards()
+            try:
+                self.fps_chart.clear()
+            except Exception:
+                pass
+        self._env_tick += 1
+        hw0 = self.store.snapshots[-1] if self.store.snapshots else None
+        if hw0 is not None and self._env_tick % self.PAGE_POLL == 0:
+            ctx0 = {}
+            for p in self.pages[1:]:
+                try:
+                    p.refresh(hw0, ctx0)
+                except Exception as ex:
+                    DIAG.report("_show_no_game_idle.page", ex)
+            self._refresh_nav_badges(hw0, ctx0)
+        elif hw0 is None:
+            self._refresh_nav_badges(None, {})
 
     def _prev_frame_of(self, frame):
         frames = self.store.visible_frames(self._eff_target())
@@ -1230,3 +1322,160 @@ class StutterTriageWindow(StutterTriageWindowBase):
                     "结果窗口没能打开（%s），提示词已复制到剪贴板，直接粘贴即可。" % ex)
             except Exception:
                 pass
+
+    # ==========================================================================
+    # v1.1.2 悬浮窗（游戏里也能看到软件在跑；可开关、可调透明度）
+    # ==========================================================================
+    def _ensure_float_window(self):
+        """
+        惰性创建悬浮窗。
+
+        【为什么惰性】模块/环境不满足时（老版本、被裁剪的打包）不能让主界面起不来；
+        任何异常都只记日志并返回 None，按钮仍在但不会崩。
+        """
+        if getattr(self, "_float_win", None) is not None:
+            return self._float_win
+        try:
+            from .float_window import FloatWindow
+        except Exception as ex:
+            DIAG.report("_ensure_float_window.import", ex)
+            return None
+        try:
+            fw = FloatWindow(self)
+            fw.set_callbacks(on_toggle=self._on_float_toggle_collect,
+                             on_mark=self._on_manual_mark,
+                             on_ask=self._on_ask_ai)
+            fw.hiddenByUser.connect(self._on_float_hidden_by_user)
+            self._float_win = fw
+        except Exception as ex:
+            DIAG.report("_ensure_float_window.build", ex)
+            self._float_win = None
+        return self._float_win
+
+    def _on_float_toggle_collect(self):
+        """悬浮窗上的 ▶/⏸ —— 直接复用主窗口的开始/暂停逻辑"""
+        try:
+            self._toggle_pause()
+        except Exception as ex:
+            DIAG.report("_on_float_toggle_collect", ex)
+
+    def _on_toggle_float(self):
+        """顶栏「◱ 浮窗」：开/关并把状态写进配置（下次启动沿用）"""
+        fw = self._ensure_float_window()
+        if fw is None:
+            QMessageBox.information(self, "悬浮窗不可用",
+                                   "当前构建里没有悬浮窗模块（float_window.py 缺失）。")
+            return
+        want = not fw.isVisible()
+        try:
+            if self._ux_config is not None:
+                self._ux_config.set("float_enabled", want)
+                self._ux_config.save()
+        except Exception:
+            pass
+        try:
+            self.check_float.blockSignals(True)
+            self.check_float.setChecked(want)
+            self.check_float.blockSignals(False)
+        except Exception:
+            pass
+        self._apply_float_settings()
+
+    def _on_float_hidden_by_user(self):
+        """用户在悬浮窗上点 ✕：记住「不要了」，并同步设置页与顶栏按钮"""
+        try:
+            if self._ux_config is not None:
+                self._ux_config.set("float_enabled", False)
+                self._ux_config.save()
+        except Exception:
+            pass
+        try:
+            self.check_float.blockSignals(True)
+            self.check_float.setChecked(False)
+            self.check_float.blockSignals(False)
+        except Exception:
+            pass
+        self._sync_float_button(False)
+
+    def _apply_float_settings(self):
+        """设置页/顶栏 → 悬浮窗真实状态（覆写基类的空实现）"""
+        enabled, opacity = True, 85
+        try:
+            if self._ux_config is not None:
+                enabled = bool(self._ux_config.get("float_enabled", True))
+                opacity = int(self._ux_config.get("float_opacity", 85))
+        except Exception:
+            pass
+        fw = self._ensure_float_window()
+        if fw is None:
+            self._sync_float_button(False)
+            return
+        try:
+            fw.set_opacity(opacity)
+            fw.restyle()
+            if enabled:
+                # 首次显示摆到屏幕右上角（用户之后可以拖动；位置不做持久化 ——
+                # 「上次在副屏/分辨率变了」时硬套旧坐标比默认位置更烦人）
+                if not getattr(self, "_float_placed", False):
+                    try:
+                        scr = self.screen() or QApplication.primaryScreen()
+                        geo = scr.availableGeometry()
+                        fw.move(geo.right() - fw.width() - 32, geo.top() + 32)
+                    except Exception:
+                        pass
+                    self._float_placed = True
+                fw.show()
+                fw.raise_()
+            else:
+                fw.hide()
+        except Exception as ex:
+            DIAG.report("_apply_float_settings", ex)
+        self._sync_float_button(bool(enabled))
+
+    def _sync_float_button(self, enabled=None):
+        btn = getattr(self, "btn_float", None)
+        if btn is None:
+            return
+        if enabled is None:
+            fw = getattr(self, "_float_win", None)
+            enabled = bool(fw is not None and fw.isVisible())
+        btn.setText("◱ 浮窗：开" if enabled else "◱ 浮窗：关")
+
+    def _update_float_state(self, st, game_name=""):
+        """把当前状态推给悬浮窗（只在可见时做，隐藏时零开销）"""
+        fw = getattr(self, "_float_win", None)
+        if fw is None:
+            return
+        try:
+            if not fw.isVisible():
+                return
+        except Exception:
+            return
+        state = {
+            "collect_state": ("paused" if self.is_paused
+                              else ("running" if getattr(self, "_collect_started", False) else "idle")),
+            "game": game_name or self.target_app or "未锁定游戏",
+            "avg_fps": (st or {}).get("avg_fps"),
+            "dropped": (st or {}).get("dropped"),
+            "hint": self._float_hint(),
+        }
+        try:
+            fw.set_state(state)
+        except Exception as ex:
+            DIAG.report("_update_float_state", ex)
+
+    def _float_hint(self):
+        """悬浮窗第四行的一句话证据（交换链路结论，短）"""
+        try:
+            st_swap = self.store.swap_stats() or {}
+            total = int(st_swap.get("total") or 0)
+            if not total:
+                return "暂无尖峰统计"
+            kinds = st_swap.get("kinds") or {}
+            if not kinds:
+                return "已排除内存交换"
+            from ..swapdiag import KIND_LABEL
+            k, v = max(kinds.items(), key=lambda kv: kv[1])
+            return "%s %d/%d" % (KIND_LABEL.get(k, k), v, total)
+        except Exception:
+            return "—"

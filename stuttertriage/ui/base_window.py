@@ -27,7 +27,9 @@ import threading
 import pyqtgraph as pg
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtWidgets import (
-    QColorDialog, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QKeySequenceEdit, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget, QVBoxLayout, QWidget,
+    QCheckBox, QColorDialog, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QHeaderView, QKeySequenceEdit, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QPushButton, QSlider, QTableWidget, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QColor, QKeySequence
@@ -808,18 +810,31 @@ class StutterTriageWindowBase(QMainWindow):
             pass
         return n
 
-    def _on_target_changed(self, text):
+    def _on_target_changed(self, selection):
         """
-        【评审 P1】切换追踪进程**不应重启 PresentMon**。
+        目标进程改变（v1.1.2：多选控件的 selectionChanged 会传 list）。
 
-        原实现在这里 stop 旧桥接 + 起新子进程，但：
-          · PresentMon 命令行**本来就没有**进程过滤（`<unknown>` 进程永远
-            无法被 --process_name 命中），过滤本来就是采集后在 UI 侧做的；
-          · 重启会杀掉子进程、重建 ETW 会话 —— 正是 error 1450 的高发路径；
-          · 还会丢失数秒数据、时间轴重置。
-        现在只切换展示目标；只有桥接线程真的死了才重启。
+        入参兼容三种形态：
+          · list/tuple —— 多选控件给的选择（空列表 = 自动锁定）
+          · "自动锁定主游戏" —— 旧文案/旧脚本
+          · "xxx.exe" —— 单进程名
         """
-        self.target_app = text
+        if isinstance(selection, (list, tuple, set)):
+            apps = [str(a).strip() for a in selection if str(a or "").strip()]
+        else:
+            s = str(selection or "").strip()
+            apps = [] if (not s or s == "自动锁定主游戏") else [s]
+        self.target_apps = apps
+        # target_app 保留「单值语义」给旧代码/导出/提示词用：
+        # 0 个 → 自动锁定；1 个 → 该进程；多个 → 用 + 连接（仅用于展示）
+        self.target_app = ("自动锁定主游戏" if not apps
+                           else (apps[0] if len(apps) == 1 else " + ".join(apps)))
+        # ---- 原评审结论（v1.0.0 P1）：只切展示目标，不重启 PresentMon ----
+        #   · PresentMon 命令行**本来就没有**进程过滤（`<unknown>` 进程永远无法被
+        #     --process_name 命中），过滤本就是采集后在 UI 侧做的；
+        #   · 重启会杀掉子进程、重建 ETW 会话 —— 正是 error 1450 的高发路径；
+        #   · 还会丢失数秒数据、时间轴重置。
+        #   只有桥接线程真的死了才重启（见下面的 liveness 判断）。
         self._auto_dom = None
         self.selected_frame = None
         self.locked_line.setVisible(False)
@@ -1625,21 +1640,114 @@ class StutterTriageWindowBase(QMainWindow):
         """
         for lbl, role in getattr(self, "_settings_labels", []):
             self._style_setting_label(lbl, role)
+        # v1.1.2：卡片/输入框/开关/滑杆的配色也随主题重刷，
+        # 否则浅色主题下卡片还是深色底、字发灰。
+        try:
+            self._restyle_settings_cards()
+        except Exception:
+            pass
+
+    # ==========================================================================
+    # v1.1.2 设置页重构（FlClash 风格卡片）
+    # --------------------------------------------------------------------------
+    # 用户反馈：「设置里各种选项 UI 美观一点，参考 FlClash」。
+    # FlClash 的设置页规律很简单，照抄就行：
+    #   ① 每一组设置 = 一张圆角卡片，卡片有标题 + 一行说明；
+    #   ② 卡片内每项 = 一行「左边标签(+灰色小字说明) / 右边控件」，右对齐；
+    #   ③ 开关用胶囊式 indicator，拖动项用滑杆，不在卡片里堆边框和分割线。
+    # 因此这里引入两个私有构造器（_settings_card / _settings_row）统一产出
+    # 「卡片 + 行」，并把卡片配色交给 _restyle_settings_cards() 跟随主题重刷
+    # （旧实现把颜色写死在每个 QLabel 上，换浅色主题就会残留灰蓝）。
+    # ==========================================================================
+    def _settings_card(self, title, desc=""):
+        """生成一张设置卡片（圆角 + 标题 + 可选说明），返回 (卡片, 垂直布局)"""
+        card = QFrame()
+        card.setObjectName("SettingsCard")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(14, 10, 14, 12)
+        box.setSpacing(8)
+        head = QLabel(title)
+        self._track_setting_label(head, "accent")
+        box.addWidget(head)
+        if desc:
+            note = QLabel(desc)
+            self._track_setting_label(note, "dim_small")
+            note.setWordWrap(True)
+            box.addWidget(note)
+        try:
+            self._settings_cards.append(card)
+        except Exception:
+            pass
+        return card, box
+
+    def _settings_row(self, parent_layout, label, widget, desc="", key=""):
+        """卡片内的一行：左「标签 + 小字说明」，右控件（FlClash 的行式布局）"""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        left = QVBoxLayout()
+        left.setSpacing(1)
+        lbl = QLabel(label)
+        lbl.setWordWrap(True)
+        self._track_setting_label(lbl, "dim")
+        left.addWidget(lbl)
+        if desc:
+            sub = QLabel(desc)
+            self._track_setting_label(sub, "dim_small")
+            sub.setWordWrap(True)
+            left.addWidget(sub)
+        if key:
+            lbl.setToolTip("%s\n配置键：%s" % (desc or label, key))
+            widget.setToolTip(lbl.toolTip())
+        row.addLayout(left, 1)
+        row.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        parent_layout.addLayout(row)
+        return widget
+
+    def _restyle_settings_cards(self):
+        """卡片、输入框、开关、滑杆跟随当前主题重刷（换肤后不再残留灰蓝）"""
+        th = CURRENT_THEME
+        page = getattr(self, "_settings_page_widget", None)
+        if page is None:
+            return
+        page.setStyleSheet(
+            "QWidget#SettingsPage { background: transparent; }"
+            "QFrame#SettingsCard { background-color: %(panel)s; border: 1px solid %(border)s;"
+            " border-radius: 10px; }"
+            "QFrame#SettingsCard QLabel { background: transparent; }"
+            "QLineEdit { background-color: %(panel2)s; color: %(fg)s; border: 1px solid %(border)s;"
+            " border-radius: 6px; padding: 4px 8px; }"
+            "QLineEdit:focus { border-color: %(accent)s; }"
+            "QComboBox { background-color: %(panel2)s; color: %(fg)s; border: 1px solid %(border)s;"
+            " border-radius: 6px; padding: 4px 10px; }"
+            "QComboBox QAbstractItemView { background-color: %(panel2)s; color: %(fg)s;"
+            " selection-background-color: %(accent)s; }"
+            "QPushButton { background-color: %(panel2)s; color: %(fg)s; border: 1px solid %(border)s;"
+            " border-radius: 6px; padding: 5px 12px; }"
+            "QPushButton:hover { border-color: %(accent)s; }"
+            "QCheckBox { color: %(fg)s; spacing: 8px; }"
+            "QCheckBox::indicator { width: 38px; height: 20px; border-radius: 10px;"
+            " background-color: %(border)s; }"
+            "QCheckBox::indicator:checked { background-color: %(accent)s; }"
+            "QSlider::groove:horizontal { height: 4px; background: %(border)s; border-radius: 2px; }"
+            "QSlider::sub-page:horizontal { background: %(accent)s; border-radius: 2px; }"
+            "QSlider::handle:horizontal { width: 14px; height: 14px; margin: -6px 0;"
+            " background: %(fg)s; border-radius: 7px; }"
+            % {"panel": th.panel, "panel2": th.panel2, "border": th.border,
+               "fg": th.fg, "accent": th.accent}
+        )
 
     def _build_settings_tab(self):
         """
-        设置页：外观（主题/背景/图表样式）/ 阈值 / PresentMon 路径 / 热键。
+        设置页（v1.1.2：FlClash 风格卡片）。
 
-        放在 QScrollArea 里 —— 右下面板较窄时控件会被压到看不见，
-        加滚动条后无论面板多窄都能操作。
-
-        【v3.2 主题跟随】本页大量 QLabel 用 setStyleSheet 硬编码主题色，
-        这些颜色在**构建时**就被固化，切换主题后会残留在新背景上
-        （深色主题的灰蓝 DIM 放到白底上几乎看不见）。
-        因此所有带色标签统一登记到 self._settings_labels，
-        主题切换时由 _restyle_settings_page() 按当前主题重刷。
+        结构：
+          外观 / 悬浮窗 / 各归因维度阈值（每组一张卡）/ 阈值保存 /
+          PresentMon / 内存交换证据链 / 全局热键 / 状态
+        所有属性名（combo_theme / cfg_edits / btn_pm_template …）保持不变，
+        保存·恢复·重载逻辑一行没动，只换了「怎么摆」。
         """
         self._settings_labels = []      # [(QLabel, role)] —— 供主题重刷
+        self._settings_cards = []
 
         outer = QWidget()
         outer_lay = QVBoxLayout(outer)
@@ -1647,38 +1755,33 @@ class StutterTriageWindowBase(QMainWindow):
         outer_lay.setSpacing(0)
 
         w = QWidget()
+        w.setObjectName("SettingsPage")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(14, 12, 14, 16)
+        lay.setSpacing(12)
+        self._settings_page_widget = w
 
-        info = QLabel("阈值参数来自配置文件 %s（修改后点「保存当前阈值」生效）。"
-                      % CONFIG_FILENAME)
+        info = QLabel("参数来自 %s；改完点「保存」立即生效，不需要重启软件。" % CONFIG_FILENAME)
         self._track_setting_label(info, "dim")
+        info.setWordWrap(True)
         lay.addWidget(info)
 
-        # --- 外观：主题 / 自定义背景色 / 图表样式 ---
-        look_title = QLabel("外观（主题 · 背景色 · 图表样式）")
-        self._track_setting_label(look_title, "accent")
-        lay.addWidget(look_title)
-
-        look_row = QHBoxLayout()
-        look_row.addWidget(QLabel("主题:"))
+        # ---------------- 1. 外观 ----------------
+        card, cv = self._settings_card("外观", "主题、图表样式与自定义背景色")
         self.combo_theme = QComboBox()
         for key, th in THEME_PRESETS.items():
             self.combo_theme.addItem(th.name, key)
         self.combo_theme.addItem("自定义背景色…", "custom")
         try:
-            cur_theme_key = CURRENT_THEME.key
-            idx = self.combo_theme.findData(cur_theme_key)
+            idx = self.combo_theme.findData(CURRENT_THEME.key)
             if idx >= 0:
                 self.combo_theme.setCurrentIndex(idx)
         except Exception:
             pass
         self.combo_theme.currentIndexChanged.connect(self._on_theme_combo_changed)
-        look_row.addWidget(self.combo_theme)
+        self.combo_theme.setMinimumWidth(220)
+        self._settings_row(cv, "主题", self.combo_theme, "整界面配色（图表与弹窗同步）")
 
-        look_row.addSpacing(10)
-        look_row.addWidget(QLabel("图表样式:"))
         self.combo_chart_style = QComboBox()
         self.combo_chart_style.addItem("CapFrameX 风格（水平阈值线 · 无填充）", CHART_STYLE_CAPFRAMEX)
         self.combo_chart_style.addItem("赛博 HUD（渐变填充 · Low 包络线）", CHART_STYLE_HUD)
@@ -1689,15 +1792,16 @@ class StutterTriageWindowBase(QMainWindow):
         except Exception:
             pass
         self.combo_chart_style.currentIndexChanged.connect(self._on_chart_style_combo_changed)
-        look_row.addWidget(self.combo_chart_style)
-        look_row.addStretch()
-        lay.addLayout(look_row)
+        self.combo_chart_style.setMinimumWidth(300)
+        self._settings_row(cv, "图表样式", self.combo_chart_style, "只影响帧率曲线的画法")
 
-        bg_row = QHBoxLayout()
-        bg_row.addWidget(QLabel("自定义背景:"))
+        bg_wrap = QWidget()
+        bg_row = QHBoxLayout(bg_wrap)
+        bg_row.setContentsMargins(0, 0, 0, 0)
+        bg_row.setSpacing(6)
         self.edit_custom_bg = QLineEdit()
-        self.edit_custom_bg.setPlaceholderText("#0a0e15 或 #ffffff")
-        self.edit_custom_bg.setMaximumWidth(140)
+        self.edit_custom_bg.setPlaceholderText("#0a0e15")
+        self.edit_custom_bg.setFixedWidth(110)
         bg_row.addWidget(self.edit_custom_bg)
         self.btn_pick_bg = QPushButton("选择颜色…")
         self.btn_pick_bg.clicked.connect(self._on_pick_custom_bg)
@@ -1705,81 +1809,93 @@ class StutterTriageWindowBase(QMainWindow):
         self.btn_apply_bg.clicked.connect(self._on_apply_custom_bg)
         bg_row.addWidget(self.btn_pick_bg)
         bg_row.addWidget(self.btn_apply_bg)
-        bg_row.addStretch()
-        lay.addLayout(bg_row)
+        self._settings_row(cv, "自定义背景", bg_wrap, "仅当主题选「自定义背景色…」时生效")
+        lay.addWidget(card)
 
-        # --- 阈值编辑表单（v1.0.0：中文人话标签 + 按归因维度分组）---
-        # 【为什么要重构】原先把原始键名当标签（spill_threshold / baseline_max_spike_frac
-        # …）12 行英文标识符糊成一块，只有作者看得懂。现在：
-        #   · 标签 = 「中文名（单位·默认）」；原始键名 + 说明进 tooltip；
-        #   · 按 显存 / CPU / 着色器 / 采集 / 基线 分组，每组一行小节标题；
-        #   · self.cfg_edits[key] 的映射与保存/恢复/重载逻辑完全不变。
+        # ---------------- 2. 悬浮窗 ----------------
+        card, cv = self._settings_card(
+            "悬浮窗", "游戏里也能看到软件正在运行；带开始/暂停与打点快捷键")
+        self.check_float = QCheckBox("显示悬浮窗")
+        try:
+            cfg = getattr(self, "_ux_config", None)
+            self.check_float.setChecked(bool(cfg.get("float_enabled", True)) if cfg else True)
+        except Exception:
+            self.check_float.setChecked(True)
+        self.check_float.toggled.connect(self._on_float_enabled_toggled)
+        self._settings_row(cv, "开关", self.check_float,
+                           "顶栏「◱ 浮窗」按钮同样可切换，位置可拖动")
+        op_wrap = QWidget()
+        op_row = QHBoxLayout(op_wrap)
+        op_row.setContentsMargins(0, 0, 0, 0)
+        op_row.setSpacing(8)
+        self.slider_float_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_float_opacity.setRange(30, 100)
+        self.slider_float_opacity.setFixedWidth(150)
+        self.lbl_float_opacity = QLabel("--%")
+        self.lbl_float_opacity.setFixedWidth(42)
+        try:
+            cfg = getattr(self, "_ux_config", None)
+            op = int(cfg.get("float_opacity", 85)) if cfg else 85
+        except Exception:
+            op = 85
+        self.slider_float_opacity.setValue(max(30, min(100, op)))
+        self.lbl_float_opacity.setText("%d%%" % self.slider_float_opacity.value())
+        self.slider_float_opacity.valueChanged.connect(self._on_float_opacity_changed)
+        op_row.addWidget(self.slider_float_opacity)
+        op_row.addWidget(self.lbl_float_opacity)
+        self._settings_row(cv, "透明度", op_wrap, "30% 接近透明，100% 完全不透明")
+        lay.addWidget(card)
+
+        # ---------------- 3. 阈值（按归因维度分组，每组一张卡片）----------------
         self.cfg_edits = {}
         grouped_keys = [k for _t, _d, ks in CONFIG_GROUPS for k in ks]
         for gname_title, gdesc, keys in CONFIG_GROUPS:
-            gtitle = QLabel(gname_title)
-            self._track_setting_label(gtitle, "accent")
-            lay.addWidget(gtitle)
-            if gdesc:
-                gnote = QLabel(gdesc)
-                self._track_setting_label(gnote, "dim_small")
-                gnote.setWordWrap(True)
-                lay.addWidget(gnote)
-            form = QGridLayout()
-            form.setSpacing(4)
-            form.setColumnStretch(1, 0)
-            form.setColumnStretch(2, 1)
-            row = 0
+            card, cv = self._settings_card(gname_title, gdesc)
             for key in keys:
                 schema = CONFIG_SCHEMA.get(key)
                 if schema is None:
                     continue
                 gname, caster, desc = schema
                 label_text, unit = CONFIG_LABELS.get(key, (key, ""))
-                lbl = QLabel("%s%s" % (label_text, ("（%s）" % unit) if unit else ""))
-                self._track_setting_label(lbl, "dim_small")
-                lbl.setWordWrap(True)
-                lbl.setToolTip("%s\n%s\n配置键：%s" % (label_text, desc, key))
                 edit = QLineEdit()
                 try:
                     cur = globals().get(gname)
                 except Exception:
                     cur = None
                 edit.setText("" if cur is None else str(cur))
-                edit.setMaximumWidth(160)
-                edit.setToolTip(lbl.toolTip())
-                form.addWidget(lbl, row, 0)
-                form.addWidget(edit, row, 1)
-                form.setColumnStretch(2, 1)
+                edit.setFixedWidth(110)
+                edit.setAlignment(Qt.AlignmentFlag.AlignRight)
                 self.cfg_edits[key] = edit
-                row += 1
-            lay.addLayout(form)
-        # 兜底：万一 CONFIG_SCHEMA 新增了键却忘了登记分组，也要能改（绝不静默丢设置项）
+                self._settings_row(
+                    cv,
+                    ("%s（%s）" % (label_text, unit)) if unit else label_text,
+                    edit, desc, key)
+            lay.addWidget(card)
+
+        # 兜底：CONFIG_SCHEMA 新增键但忘了登记分组时，也要能改（绝不静默丢设置项）
         leftovers = [k for k in CONFIG_SCHEMA.keys() if k not in grouped_keys]
         if leftovers:
-            form = QGridLayout()
-            form.setSpacing(4)
-            row = 0
+            card, cv = self._settings_card("其它阈值", "未归组的配置项（原样显示键名）")
             for key in leftovers:
                 gname, _caster, desc = CONFIG_SCHEMA[key]
-                lbl = QLabel(key)
-                self._track_setting_label(lbl, "dim_small")
-                lbl.setToolTip(desc)
                 edit = QLineEdit()
                 try:
                     cur = globals().get(gname)
                 except Exception:
                     cur = None
                 edit.setText("" if cur is None else str(cur))
-                edit.setMaximumWidth(160)
-                form.addWidget(lbl, row, 0)
-                form.addWidget(edit, row, 1)
+                edit.setFixedWidth(110)
+                edit.setAlignment(Qt.AlignmentFlag.AlignRight)
                 self.cfg_edits[key] = edit
-                row += 1
-            lay.addLayout(form)
+                self._settings_row(cv, key, edit, desc, key)
+            lay.addWidget(card)
 
+        # 保存按钮紧跟在阈值卡片后面（改完立刻点得到，不用滚到页面底部找）
+        card, cv = self._settings_card("保存阈值", "写入 %s，并立即热更新到所有模块" % CONFIG_FILENAME)
         btns = QHBoxLayout()
+        btns.setSpacing(8)
         self.btn_cfg_save = QPushButton("保存当前阈值")
+        self.btn_cfg_save.setObjectName("SettingsPrimary")
         self.btn_cfg_save.clicked.connect(self._on_save_thresholds)
         self.btn_cfg_reset = QPushButton("恢复默认")
         self.btn_cfg_reset.clicked.connect(self._on_reset_thresholds)
@@ -1789,46 +1905,47 @@ class StutterTriageWindowBase(QMainWindow):
         btns.addWidget(self.btn_cfg_reset)
         btns.addWidget(self.btn_cfg_reload)
         btns.addStretch()
-        lay.addLayout(btns)
+        cv.addLayout(btns)
+        lay.addWidget(card)
 
-        # --- PresentMon 路径 ---
-        lay.addSpacing(6)
-        pm_title = QLabel("PresentMon.exe 路径（手动指定，留空则自动查找）")
-        self._track_setting_label(pm_title, "accent")
-        lay.addWidget(pm_title)
-        pm_row = QHBoxLayout()
+        # ---------------- 4. PresentMon ----------------
+        card, cv = self._settings_card(
+            "PresentMon（帧采集引擎）", "留空则自动查找；随包已内置 2.6.0")
+        pm_wrap = QWidget()
+        pm_row = QHBoxLayout(pm_wrap)
+        pm_row.setContentsMargins(0, 0, 0, 0)
+        pm_row.setSpacing(6)
         self.edit_pm_path = QLineEdit()
-        self.edit_pm_path.setPlaceholderText("例如: C:\Tools\PresentMon.exe")
+        self.edit_pm_path.setPlaceholderText("例如: C:\\Tools\\PresentMon.exe")
+        self.edit_pm_path.setMinimumWidth(240)
         self.btn_pm_browse = QPushButton("浏览…")
         self.btn_pm_browse.clicked.connect(self._on_browse_presentmon)
         self.btn_pm_open_dir = QPushButton("打开目录")
         self.btn_pm_open_dir.clicked.connect(self._on_open_presentmon_dir)
-        pm_row.addWidget(self.edit_pm_path, 1)
+        pm_row.addWidget(self.edit_pm_path)
         pm_row.addWidget(self.btn_pm_browse)
         pm_row.addWidget(self.btn_pm_open_dir)
-        lay.addLayout(pm_row)
-
+        self._settings_row(cv, "exe 路径", pm_wrap, "自定义版本时指定")
         pm_hint = QLabel(presentmon_missing_hint())
         self._track_setting_label(pm_hint, "dim_small")
         pm_hint.setWordWrap(True)
-        lay.addWidget(pm_hint)
+        cv.addWidget(pm_hint)
+        lay.addWidget(card)
 
-        # --- 内存交换证据链 / perfmon 同步录制（v1.1.0） ---
-        lay.addSpacing(6)
-        sw_title = QLabel("内存交换证据链（页面文件 / 硬缺页 / 磁盘延迟）")
-        self._track_setting_label(sw_title, "accent")
-        lay.addWidget(sw_title)
+        # ---------------- 5. 内存交换证据链 / perfmon ----------------
+        card, cv = self._settings_card(
+            "内存交换证据链（pagefile / 硬缺页 / 磁盘延迟）",
+            "PresentMon 的 CSV 没有 pagefile 交换与磁盘延迟；要证明尖峰是不是内存交换，"
+            "必须用 perfmon 同步录制")
         sw_hint = QLabel(
-            "PresentMon 的 CSV 只有帧时间，没有 pagefile 交换、硬缺页与磁盘延迟，"
-            "所以「>100ms 尖峰是不是内存交换造成的」必须靠 perfmon 同步录制才能证明。\n"
             "① 点「导出 perfmon 采集模板」→ 运行其中的 start_perfmon.bat；"
             "② 让本工具采集游戏并复现卡顿；③ 运行 stop_perfmon.bat；"
-            "④ 回来点「对齐 perfmon CSV…」，选择 perfmon 的 CSV，"
-            "即可得到每个尖峰的交换/磁盘/DWM 判定与合并 CSV。")
+            "④ 回来点「对齐 perfmon CSV…」，即可得到每个尖峰的交换/磁盘/DWM 判定。")
         self._track_setting_label(sw_hint, "dim_small")
         sw_hint.setWordWrap(True)
-        lay.addWidget(sw_hint)
+        cv.addWidget(sw_hint)
         sw_row = QHBoxLayout()
+        sw_row.setSpacing(8)
         self.btn_pm_template = QPushButton("导出 perfmon 采集模板")
         self.btn_pm_template.clicked.connect(self._export_perfmon_template)
         self.btn_pm_align = QPushButton("对齐 perfmon CSV…")
@@ -1836,41 +1953,38 @@ class StutterTriageWindowBase(QMainWindow):
         sw_row.addWidget(self.btn_pm_template)
         sw_row.addWidget(self.btn_pm_align)
         sw_row.addStretch()
-        lay.addLayout(sw_row)
+        cv.addLayout(sw_row)
+        lay.addWidget(card)
 
-        # --- 全局热键（可视化改键） ---
-        lay.addSpacing(6)
-        hk_title = QLabel("全局热键「打点标记」（点击输入框后直接按下想要的组合键）")
-        self._track_setting_label(hk_title, "accent")
-        lay.addWidget(hk_title)
-        hk_row = QHBoxLayout()
+        # ---------------- 6. 全局热键 ----------------
+        card, cv = self._settings_card(
+            "全局热键（打点标记）", "直接点输入框，按下想要的组合键即可")
+        hk_wrap = QWidget()
+        hk_row = QHBoxLayout(hk_wrap)
+        hk_row.setContentsMargins(0, 0, 0, 0)
+        hk_row.setSpacing(6)
         self.edit_hotkey = QKeySequenceEdit()
-        self.edit_hotkey.setMaximumWidth(200)
+        self.edit_hotkey.setMaximumWidth(180)
         try:
             self.edit_hotkey.setKeySequence(QKeySequence(self._current_hotkey_text()))
         except Exception:
             pass
         self.edit_hotkey.editingFinished.connect(self._on_hotkey_sequence_changed)
         self.edit_hotkey.keySequenceChanged.connect(self._on_hotkey_sequence_changed)
-        hk_row.addWidget(self.edit_hotkey)
         self.btn_hk_apply = QPushButton("立即应用")
         self.btn_hk_apply.clicked.connect(self._on_apply_hotkey_sequence)
         self.btn_hk_reset = QPushButton("恢复默认")
         self.btn_hk_reset.clicked.connect(self._on_reset_hotkey)
+        hk_row.addWidget(self.edit_hotkey)
         hk_row.addWidget(self.btn_hk_apply)
         hk_row.addWidget(self.btn_hk_reset)
-        hk_row.addStretch()
-        lay.addLayout(hk_row)
-
-        self.lbl_hotkey_tip = QLabel(
-            "提示：直接点击上方输入框，按下你想要的组合键（支持 Ctrl / Alt / Shift / Win + 任意键）。"
-            "热键在游戏全屏时也能触发，用于随手标记卡顿瞬间。")
-        self._track_setting_label(self.lbl_hotkey_tip, "dim_small")
-        self.lbl_hotkey_tip.setWordWrap(True)
-        lay.addWidget(self.lbl_hotkey_tip)
+        self._settings_row(cv, "组合键", hk_wrap,
+                           "游戏全屏时也能触发，用于随手标记卡顿瞬间")
+        lay.addWidget(card)
 
         self.lbl_settings_status = QLabel("")
         self._track_setting_label(self.lbl_settings_status, "dim_small")
+        self.lbl_settings_status.setWordWrap(True)
         lay.addWidget(self.lbl_settings_status)
 
         lay.addStretch()
@@ -1889,7 +2003,43 @@ class StutterTriageWindowBase(QMainWindow):
         except Exception:
             pass
         outer_lay.addWidget(scroll)
+        self._restyle_settings_cards()
         return outer
+
+    # ---------------- 悬浮窗（v1.1.2）----------------
+    def _on_float_enabled_toggled(self, checked):
+        """设置页开关 → 持久化 + 立即显示/隐藏（真正实现由主窗口提供）"""
+        try:
+            if getattr(self, "_ux_config", None) is not None:
+                self._ux_config.set("float_enabled", bool(checked))
+                self._ux_config.save()
+        except Exception as ex:
+            DIAG.report("_on_float_enabled_toggled", ex)
+        try:
+            self._apply_float_settings()
+        except Exception as ex:
+            DIAG.report("_on_float_enabled_toggled.apply", ex)
+
+    def _on_float_opacity_changed(self, value):
+        """透明度滑杆 → 持久化 + 立即生效（30~100）"""
+        try:
+            self.lbl_float_opacity.setText("%d%%" % int(value))
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_ux_config", None) is not None:
+                self._ux_config.set("float_opacity", int(value))
+                self._ux_config.save()
+        except Exception as ex:
+            DIAG.report("_on_float_opacity_changed", ex)
+        try:
+            self._apply_float_settings()
+        except Exception:
+            pass
+
+    def _apply_float_settings(self):
+        """默认空实现：主窗口覆写（没有浮窗时也不能报错）"""
+        return
 
     def _on_theme_combo_changed(self, index):
         try:
@@ -2187,16 +2337,38 @@ class StutterTriageWindowBase(QMainWindow):
                 nm = nt.get(pid)
                 if nm and nm.lower().endswith(".exe") and nm not in names:
                     names.append(nm)
-            cur = self.combo_procs.currentText()
-            self.combo_procs.blockSignals(True)
-            self.combo_procs.clear()
-            self.combo_procs.addItem("自动锁定主游戏")
-            for nm in sorted(names)[:80]:
-                self.combo_procs.addItem(nm)
-            idx = self.combo_procs.findText(cur)
-            if idx >= 0:
-                self.combo_procs.setCurrentIndex(idx)
-            self.combo_procs.blockSignals(False)
+            # 【v1.1.2】把「实际在产帧的进程」也并进列表：
+            # 全屏独占 / 由启动器代跑的进程常常枚举不到可见窗口（GTA5 即此），
+            # 只靠 EnumWindows 会让用户「列表里根本找不到它」。
+            try:
+                seen_low = {n.lower() for n in names}
+                for fr in reversed(self.store.frames):
+                    a = (fr.app or "").strip()
+                    if not a or a == "<unknown>":
+                        continue
+                    if a.lower().endswith(".exe") and a.lower() not in seen_low:
+                        seen_low.add(a.lower())
+                        names.append(a)
+                    if len(names) >= 200:
+                        break
+            except Exception:
+                pass
+            # 多选控件：保留用户已勾选/手动添加的项，不因刷新丢失
+            extra = list(getattr(self, "target_apps", []) or [])
+            # 全屏独占的游戏常以 <unknown> 上报 —— 列表里必须可选，否则永远追不到
+            try:
+                if any((f.app or "") == "<unknown>" for f in self.store.frames):
+                    extra.append("<unknown>")
+            except Exception:
+                pass
+            for nm in extra:
+                if nm and nm.lower() not in {n.lower() for n in names}:
+                    names.append(nm)
+            try:
+                self.combo_procs.set_processes(sorted(names)[:120], keep=True)
+                self.combo_procs.set_selected(extra, emit=False)
+            except Exception as ex:
+                DIAG.report("_refresh_processes.multiselect", ex)
         except Exception:
             pass
 
@@ -2233,6 +2405,14 @@ class StutterTriageWindowBase(QMainWindow):
             if getattr(self, "hw_panel", None) is not None:
                 self.hw_panel.hide()
                 self.hw_panel.close()
+        except Exception:
+            pass
+        # 【v1.1.2】悬浮窗是顶层窗口：不关掉会留在屏幕上（且 test_close_cleanup 会红）
+        try:
+            fw = getattr(self, "_float_win", None)
+            if fw is not None:
+                fw.hide()
+                fw.close()
         except Exception:
             pass
         self._close_other_windows()

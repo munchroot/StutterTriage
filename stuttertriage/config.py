@@ -67,7 +67,9 @@ CONFIG_SCHEMA = {
 
 # 非阈值类配置（行为开关 / 路径 / 皮肤）
 CONFIG_EXTRA_KEYS = ("hotkey", "presentmon_path", "blacklist_extra",
-                      "theme", "chart_style", "custom_bg")
+                      "theme", "chart_style", "custom_bg",
+                      # v1.1.2 悬浮窗（游戏里也能看到软件在跑、并能一键开停）
+                      "float_enabled", "float_opacity")
 
 
 # ==============================================================================
@@ -154,6 +156,9 @@ DEFAULT_CONFIG = {
     "theme": "deepspace",
     "chart_style": "capframex",
     "custom_bg": "",
+    # v1.1.2：悬浮窗默认开启（游戏里看不到软件在跑是本次反馈的重点之一）
+    "float_enabled": True,
+    "float_opacity": 85,
 }
 
 
@@ -269,6 +274,16 @@ class Config:
                 self.warnings.append("图表样式 %r 不认识，已回落默认" % ckey)
         if "custom_bg" in raw:
             self.data["custom_bg"] = str(raw["custom_bg"] or "")
+        # ---- v1.1.2 浮窗 ----
+        if "float_enabled" in raw:
+            self.data["float_enabled"] = bool(raw["float_enabled"])
+        if "float_opacity" in raw:
+            try:
+                op = int(float(raw["float_opacity"]))
+            except (TypeError, ValueError):
+                op = DEFAULT_CONFIG["float_opacity"]
+                self.warnings.append("float_opacity 非法，已回落到默认")
+            self.data["float_opacity"] = max(30, min(100, op))
         return self
 
     def get(self, key, default=None):

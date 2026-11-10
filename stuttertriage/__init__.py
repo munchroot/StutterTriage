@@ -18,5 +18,5 @@ r"""StutterTriage —— 游戏掉帧（卡顿）一站式体检台
   · config.py               配置外部化（阈值、主题、热键）
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.2"
 __all__ = ["__version__"]

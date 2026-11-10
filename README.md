@@ -25,6 +25,13 @@
   逐尖峰输出「交换 / 磁盘 / DWM / 已排除」判定并另存合并 CSV
 - **硬件心跳**：CPU 每核频率与占用、GPU 频率温度显存、内存换页、磁盘与网络
 - **事件流**：自动告警 + 手动打点（全局热键）历史，可回看定位
+- **多选游戏 / 手动添加**（v1.1.2）：「游戏」菜单可勾选任意多个进程（游戏 + 启动器），
+  也能手动输入进程名或 `<unknown>` —— 全屏独占的游戏（如 GTA5）常以 `<unknown>` 上报，
+  单选下拉根本选不到；列表还会自动并入「实际在产帧的进程」，不依赖 EnumWindows
+- **悬浮窗**（v1.1.2）：置顶小窗显示「运行中 / 平均帧 / 顿挫次数 / 交换证据」，
+  带 ▶ 开始暂停、★ 打点、🤖 问 AI 快捷键，透明度 30~100% 可调，顶栏一键开关
+- **设置页卡片化**（v1.1.2）：按 FlClash 风格重组为「圆角卡片 + 左标签右控件」，
+  阈值按归因维度分组，外观/悬浮窗/PresentMon/交换证据链/热键各自成卡，跟随主题换色
 - **一键问 AI**：点一下把本次体检导出成桌面 CSV（32 列、含时间戳），同时弹出窗口，
   里面是**可直接复制**的提示词 —— 让 ChatGPT / DeepSeek / Kimi 以「Windows 性能专家」
   的身份按证据强度给根因排序与可执行修复步骤，而不是泛泛而谈
@@ -82,6 +89,8 @@ stuttertriage/
   ui/chart.py               实时 FPS 曲线（渐变填充 + 均值虚线 + 顿挫红点 + 锁死坐标轴）
   ui/cpu_trend.py           CPU 折线：均频/功率总览 + 每线程一条（可滚动）折线
   ui/aiask_dialog.py        一键问 AI 结果窗口（专家提示词 / 一句话版 + 一键复制）
+  ui/multiselect.py         多选游戏控件（勾选多个进程 / 手动添加 <unknown>）
+  ui/float_window.py        置顶悬浮窗（状态 + 开始暂停/打点/问 AI + 透明度）
   ui/diagnosis.py           极简卡顿病历卡（idle/红/绿三态，高度恒定）+ 12 项专业对照表窗口
   ui/plain.py               小白话术映射表（专业归因 → 人话 + 解决建议）
   ui/widgets.py             通用可视化组件（CPU 热力块矩阵 / ElidedLabel / 探针读数条 / 进度条）
@@ -90,13 +99,13 @@ docs/                       设计资料（引擎 API 契约、迁移期 UI 清�
 assets/                     打包用图标（stuttertriage.ico 多尺寸 + 256px PNG 源图）
 build_tools/                打包脚本与 PyInstaller 配置（build_exe.ps1 / StutterTriage.spec / version_info.txt）
 dist/                       打包产物（StutterTriage.exe 单文件；旁边可放 stuttertriage_config.json）
-tests/                      16 个可执行测试脚本（见 §3）
+tests/                      18 个可执行测试脚本（见 §3）
 ```
 
 ## 3. 测试
 
 ```powershell
-# 全部（16 个脚本，纯逻辑 + 静态不变量 + offscreen 运行时冒烟 + 暗色可读性 + 退出清理 + 版面零抖动 + 交换证据链）
+# 全部（18 个脚本，纯逻辑 + 静态不变量 + offscreen 运行时冒烟 + 暗色可读性 + 退出清理 + 版面零抖动 + 交换证据链 + 多选/浮窗）
 Get-ChildItem tests\*.py | Where-Object { $_.Name -ne 'render_preview.py' -and $_.Name -notlike '_*' } | ForEach-Object { python $_.FullName }
 
 # 单独跑
@@ -110,6 +119,8 @@ python tests\test_static_integrity.py     # 拆分不变量：无漏 import / �
 python tests\test_plain_and_stats.py      # 小白话术映射 + 帧率口径 + 评级 + 阈值广播
 python tests\test_swap_evidence.py        # v1.1.0：交换证据链判定 + perfmon CSV 解析/时间对齐 + 导出列契约
 python tests\test_aiask.py                # 一键问 AI：桌面路径 / 提示词内容 / 弹窗复制 / 点击端到端
+python tests\test_target_select.py         # v1.1.2：多选游戏 / 手动添加 / 桌面帧过滤 / 浮窗与设置卡片接线
+python tests\test_float_window.py          # v1.1.2：悬浮窗构造 / 状态 / 透明度 / 回调 / 折叠 / 隐藏信号
                                           #   （CLI 也可单独跑：python -m stuttertriage.perfmon align --record … --perfmon …）
 python tests\test_theme.py                # 主题/热键/图表样式契约
 python tests\test_ux.py                   # 59 项 UX 契约（配置/数据源/水印/热键/黑名单/CSV/ETW/打点）
