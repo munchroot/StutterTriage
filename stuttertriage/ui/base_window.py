@@ -1866,10 +1866,14 @@ class StutterTriageWindowBase(QMainWindow):
                 edit.setFixedWidth(110)
                 edit.setAlignment(Qt.AlignmentFlag.AlignRight)
                 self.cfg_edits[key] = edit
+                # 【v1.1.2 去重】CONFIG_LABELS 的「单位 · 默认」与 CONFIG_SCHEMA 的说明
+                # 内容重复（标题一行 + 说明又一遍，像 bug）。视觉上只留标题里的单位，
+                # 完整说明进 tooltip。
                 self._settings_row(
                     cv,
                     ("%s（%s）" % (label_text, unit)) if unit else label_text,
-                    edit, desc, key)
+                    edit, "", key)
+                edit.setToolTip("%s\n配置键：%s" % (desc, key))
             lay.addWidget(card)
 
         # 兜底：CONFIG_SCHEMA 新增键但忘了登记分组时，也要能改（绝不静默丢设置项）

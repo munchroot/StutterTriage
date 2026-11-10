@@ -120,11 +120,11 @@ def test_brand():
     check("侧栏 LOGO 也没有旧品牌", "卡顿减减" not in win.lbl_logo.text(), win.lbl_logo.text())
     with open(os.path.join(ROOT, "build_tools", "version_info.txt"), "r", encoding="utf-8") as f:
         vi = f.read()
-    major_minor = ".".join(stuttertriage.__version__.split(".")[:2])
     nums = tuple(int(x) for x in stuttertriage.__version__.split(".")[:3])
+    # 三段的补丁号也要比（1.1.0 → 1.1.2 时只用 major.minor 会漏判）
     check("version_info 与 __version__ 同步",
-          ("%d, %d, %d, 0" % nums) in vi and ("%s.0" % major_minor) in vi,
-          "%d, %d, %d, 0 / %s.0" % (nums + (major_minor,)))
+          ("%d, %d, %d, 0" % nums) in vi and ("%d.%d.%d.0" % nums) in vi,
+          "%d, %d, %d, 0 / %d.%d.%d.0" % (nums + nums))
     check("version_info 里没有旧品牌", "卡顿减减" not in vi)
     win.close()
     win.deleteLater()

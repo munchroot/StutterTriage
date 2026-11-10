@@ -9,6 +9,9 @@
   "cpu0_idle_others": 70.0,
   "cpu0_jam_threshold": 92.0,
   "custom_bg": "",
+  "dwm_cpu_warn_pct": 12.0,
+  "float_enabled": true,
+  "float_opacity": 85,
   "freq_drop_ratio": 0.18,
   "hotkey": "Ctrl+Shift+P",
   "max_hw_age": 1.2,
@@ -16,5 +19,13 @@
   "pm_buffer_size": 4096,
   "presentmon_path": "",
   "spill_threshold": 67108864,
+  "swap_coincide_min_rate": 0.6,
+  "swap_disk_lat_danger_ms": 50.0,
+  "swap_disk_lat_warn_ms": 25.0,
+  "swap_disk_queue_warn": 2.0,
+  "swap_pagefile_danger_pct": 80.0,
+  "swap_pagefile_warn_pct": 60.0,
+  "swap_pages_in_min_mb": 8.0,
+  "swap_pages_out_min_mb": 20.0,
   "theme": "light"
 }
