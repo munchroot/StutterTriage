@@ -19,16 +19,18 @@ StutterTriage 主窗口（v4.1 · 「视图导航卡 + QStackedWidget」布局�
   五、顿挫 → 以「最近 120 帧局部中位数」为基准的双重门控（stats.stutter_flags），
       85FPS 以上一律豁免；没触发时病历卡隐藏或显示绿色「全程运行丝滑」。
 """
+import os
 import time
 
 import numpy as np
 
 from PyQt6.QtGui import QAction
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QMenu, QProgressBar,
-                             QPushButton, QStackedWidget, QTabWidget, QToolButton,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox,
+                             QProgressBar, QPushButton, QStackedWidget, QTabWidget,
+                             QToolButton, QVBoxLayout, QWidget)
 
+from .. import aiask
 from .. import theme as T
 from ..analysis import SnapshotDiffInspector
 from ..config import Config
@@ -39,6 +41,7 @@ from ..theme import (CURRENT_THEME, THEME_PRESETS, attach_shadow,
                      bind_globals as _bind_theme_globals)
 from ..utils import DIAG
 from ..winadmin import detect_data_source, make_sim_watermark
+from .aiask_dialog import AskAiDialog
 from .base_window import StutterTriageWindowBase
 from .chart import MODE_FPS, MODE_MS
 from .diagnosis import ProfessionalTableDialog
@@ -197,6 +200,16 @@ class StutterTriageWindow(StutterTriageWindowBase):
         self.btn_mark.setToolTip("在当前时刻打一个手动标记（等同全局热键）")
         self.btn_mark.clicked.connect(self._on_manual_mark)
         sb.addWidget(self.btn_mark)
+
+        # ---- v1.1.0 小改动：一键问 AI（导出桌面 CSV + 弹出可复制提示词）----
+        self.btn_ask_ai = QPushButton("🤖 一键问 AI")
+        self.btn_ask_ai.setObjectName("NavButton")
+        self.btn_ask_ai.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ask_ai.setToolTip(
+            "把本次体检导出成桌面 CSV，并弹出一段可复制的「AI 电脑专家」提示词"
+            "（复制后粘到任意对话窗口即可）")
+        self.btn_ask_ai.clicked.connect(self._on_ask_ai)
+        sb.addWidget(self.btn_ask_ai)
 
         self.lbl_hotkey = ElidedLabel("")
         self.lbl_hotkey.setStyleSheet("color: %s; font-size: 10px;" % CURRENT_THEME.dim)
@@ -396,6 +409,10 @@ class StutterTriageWindow(StutterTriageWindowBase):
         self.act_export = QAction("💾 导出本次采集 CSV", self)
         self.act_export.triggered.connect(self._export_csv)
         menu.addAction(self.act_export)
+
+        self.act_ask_ai = QAction("🤖 一键问 AI（导到桌面 + 生成专家提示词）", self)
+        self.act_ask_ai.triggered.connect(self._on_ask_ai)
+        menu.addAction(self.act_ask_ai)
 
         self.act_sim = QAction("🎲 切到模拟数据流", self)
         self.act_sim.triggered.connect(self._toggle_simulation)
@@ -1034,3 +1051,160 @@ class StutterTriageWindow(StutterTriageWindowBase):
                     self._ux_config.get("baseline_max_spike_frac", 0.35))
         except Exception as ex:
             DIAG.report("_init_ux(broadcast)", ex)
+
+    # ==========================================================================
+    # v1.1.0 小改动：一键问 AI
+    # --------------------------------------------------------------------------
+    # 用户的真实下一步往往不是「再点一个按钮看曲线」，而是「拿着数据去问 AI」。
+    # 所以这里把两件事合成一次点击：
+    #   ① 把当前会话导出成桌面 CSV（复用 _write_record_csv 的 32 列，含 WallClock）；
+    #   ② 弹出窗口，里面是一段**要求 AI 扮演 Windows 性能专家**的提示词（可一键复制）。
+    # 关键点：提示词里写死了「按证据强度排序 / 给可执行步骤 / 指出不可判定项 / 矛盾要点明」，
+    # 否则 AI 只会给一堆泛泛的「关闭后台程序」。
+    # ==========================================================================
+    AI_ISSUE_LIMIT = 8        # 归因表里最多带几条命中项进提示词（太长反而干扰 AI）
+
+    def _collect_ai_data(self):
+        """
+        把当前会话压成 aiask 需要的纯数据。
+
+        【铁律】任何一项拿不到就留空 / 0，由 aiask 显示「—」；
+        绝不为了"看起来完整"去编一个数字 —— 喂给 AI 的假数据会被它当成证据。
+        """
+        frames = list(self.store.frames)
+        if not frames:
+            return None
+        try:
+            st = window_stats(frames)
+        except Exception as ex:
+            DIAG.report("_collect_ai_data.stats", ex)
+            st = {}
+        app = self.store.dominant_app() or self.target_app or ""
+        if app == "自动锁定主游戏":
+            app = ""
+        try:
+            spikes33 = self.store.count_spikes(33.0)
+            spikes100 = self.store.count_spikes(100.0)
+        except Exception:
+            spikes33 = spikes100 = 0
+        try:
+            duration = max(0.0, float(frames[-1].wall_ts) - float(frames[0].wall_ts))
+        except Exception:
+            duration = 0.0
+
+        hw = self.store.snapshots[-1] if self.store.snapshots else None
+        hw_d = {}
+        if hw is not None:
+            vram_pct = 0.0
+            try:
+                if float(getattr(hw, "vram_total", 0.0) or 0.0) > 0:
+                    vram_pct = (float(getattr(hw, "vram_dedicated", 0.0) or 0.0)
+                                / float(hw.vram_total) * 100.0)
+            except Exception:
+                vram_pct = 0.0
+            hw_d = {
+                "cpu_total": getattr(hw, "cpu_total", 0.0),
+                "cpu0_usage": getattr(hw, "cpu0_usage", 0.0),
+                "mem_avail_mb": getattr(hw, "mem_avail_mb", 0.0),
+                "pagefile_pct": getattr(hw, "pf_usage_pct", 0.0),
+                "pagein_mb": getattr(hw, "page_in", 0.0),
+                "pageout_mb": getattr(hw, "page_out", 0.0),
+                "disk_read_ms": getattr(hw, "disk_read_ms", 0.0),
+                "disk_write_ms": getattr(hw, "disk_write_ms", 0.0),
+                "disk_queue": getattr(hw, "disk_queue", 0.0),
+                "dwm_cpu": getattr(hw, "dwm_cpu", 0.0),
+                "vram_pct": vram_pct,
+                "gpu_clock": getattr(hw, "gpu_clock", None),
+                "gpu_temp": getattr(hw, "gpu_temp", None),
+            }
+        try:
+            swap = self.store.swap_stats()
+        except Exception as ex:
+            DIAG.report("_collect_ai_data.swap", ex)
+            swap = {}
+
+        # 归因表命中项：优先取「最近一个尖峰帧」，没有尖峰就取最后一帧
+        issues = []
+        try:
+            target = None
+            for fr in reversed(frames):
+                if float(getattr(fr, "frametime", 0.0) or 0.0) >= 33.0:
+                    target = fr
+                    break
+            if target is None:
+                target = frames[-1]
+            for r in SnapshotDiffInspector.inspect(target, self.store):
+                if r.severity in ("DANGER", "WARN"):
+                    issues.append((r.dim, r.verdict))
+            issues = issues[:self.AI_ISSUE_LIMIT]
+        except Exception as ex:
+            DIAG.report("_collect_ai_data.inspect", ex)
+            issues = []
+
+        events = []
+        try:
+            for ev in list(self.store.events)[-6:]:
+                events.append((time.strftime("%H:%M:%S", time.localtime(ev.ts)),
+                               ev.kind, ev.text))
+        except Exception:
+            events = []
+
+        return {
+            "app": app,
+            "data_source": getattr(self, "_data_source", ""),
+            "frames": len(frames),
+            "duration_s": duration,
+            "avg_fps": st.get("avg_fps"),
+            "max_fps": st.get("max_fps"),
+            "low1_fps": st.get("low1_fps"),
+            "low01_fps": st.get("low01_fps"),
+            "dropped": st.get("dropped"),
+            "dropped_pct": st.get("dropped_pct"),
+            "gpu_busy_pct": st.get("gpu_busy_pct"),
+            "spikes_33": spikes33,
+            "spikes_100": spikes100,
+            "hw": hw_d,
+            "swap": swap,
+            "issues": issues,
+            "events": events,
+        }
+
+    def _on_ask_ai(self):
+        """一键问 AI：导出 CSV 到桌面 + 弹出可复制的专家提示词窗口。"""
+        data = self._collect_ai_data()
+        if not data:
+            QMessageBox.information(
+                self, "还没有数据",
+                "还没有采集到帧数据。\n\n"
+                "请先点「▶ 开始采集」，复现卡顿 10~30 秒后再点「🤖 一键问 AI」。")
+            return
+
+        csv_path = ""
+        try:
+            path = os.path.join(aiask.desktop_dir(), aiask.report_filename())
+            self._write_record_csv(path)
+            csv_path = path
+        except Exception as ex:
+            DIAG.report("_on_ask_ai.export", ex)
+            QMessageBox.warning(
+                self, "CSV 导出失败",
+                "逐帧 CSV 没能写到桌面（%s）。\n提示词照常生成，可先复制提问。" % ex)
+
+        prompt = aiask.build_prompt(data, csv_path)
+        short = aiask.short_sentences(data, csv_path)
+        try:
+            dlg = AskAiDialog(self)
+            dlg.set_content(prompt, short, csv_path)
+            self._ask_ai_dialog = dlg        # 保住引用，避免窗口被 GC 掉
+            dlg.exec()
+        except Exception as ex:
+            # 【兜底】窗口起不来也不能让功能彻底失效：直接把提示词塞进剪贴板
+            DIAG.report("_on_ask_ai.dialog", ex)
+            try:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.clipboard().setText(prompt)
+                QMessageBox.information(
+                    self, "提示词已复制",
+                    "结果窗口没能打开（%s），提示词已复制到剪贴板，直接粘贴即可。" % ex)
+            except Exception:
+                pass

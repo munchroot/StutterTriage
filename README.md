@@ -25,6 +25,9 @@
   逐尖峰输出「交换 / 磁盘 / DWM / 已排除」判定并另存合并 CSV
 - **硬件心跳**：CPU 每核频率与占用、GPU 频率温度显存、内存换页、磁盘与网络
 - **事件流**：自动告警 + 手动打点（全局热键）历史，可回看定位
+- **一键问 AI**：点一下把本次体检导出成桌面 CSV（32 列、含时间戳），同时弹出窗口，
+  里面是**可直接复制**的提示词 —— 让 ChatGPT / DeepSeek / Kimi 以「Windows 性能专家」
+  的身份按证据强度给根因排序与可执行修复步骤，而不是泛泛而谈
 - **CSV 回放**：导入 CapFrameX / PresentMon 导出的 CSV 离线分析
 - **降级可用**：没有 PresentMon 时自动切模拟数据流，并在界面标注数据源，绝不冒充真实采样
 - **多套皮肤**：浅色 / 深色 / 深空 / HUD / CapFrameX，全部支持热切换
@@ -63,6 +66,7 @@ stuttertriage/
   engines/hardware.py       HardwareEngine 轮询线程（CPU/GPU/显存/IO/网络/缓存/功率）
   engines/presentmon.py     PresentMon 定位与能力探测 + PresentMonBridge 采集线程
   analysis.py               BaselineTracker / FrameStore / SnapshotDiffInspector（12 维归因）
+  aiask.py                  「一键问 AI」：桌面 CSV 命名 + 体检摘要 + 专家提示词拼装（纯函数）
   swapdiag.py               内存-磁盘交换证据链：尖峰 ↔ pagefile/磁盘/DWM 的可证伪判定（纯函数）
   perfmon.py                perfmon 采集模板（txt/bat/xml）+ perfmon CSV 解析 + 帧日志时间对齐（含 CLI）
   config.py                 stuttertriage_config.json 读写与回落
@@ -77,6 +81,7 @@ stuttertriage/
   ui/gauge.py               GamePP 风格图形元件（胶囊条/圆环/能量柱/频率柱/显存大横条/段位徽章）
   ui/chart.py               实时 FPS 曲线（渐变填充 + 均值虚线 + 顿挫红点 + 锁死坐标轴）
   ui/cpu_trend.py           CPU 折线：均频/功率总览 + 每线程一条（可滚动）折线
+  ui/aiask_dialog.py        一键问 AI 结果窗口（专家提示词 / 一句话版 + 一键复制）
   ui/diagnosis.py           极简卡顿病历卡（idle/红/绿三态，高度恒定）+ 12 项专业对照表窗口
   ui/plain.py               小白话术映射表（专业归因 → 人话 + 解决建议）
   ui/widgets.py             通用可视化组件（CPU 热力块矩阵 / ElidedLabel / 探针读数条 / 进度条）
@@ -85,13 +90,13 @@ docs/                       设计资料（引擎 API 契约、迁移期 UI 清�
 assets/                     打包用图标（stuttertriage.ico 多尺寸 + 256px PNG 源图）
 build_tools/                打包脚本与 PyInstaller 配置（build_exe.ps1 / StutterTriage.spec / version_info.txt）
 dist/                       打包产物（StutterTriage.exe 单文件；旁边可放 stuttertriage_config.json）
-tests/                      15 个可执行测试脚本（见 §3）
+tests/                      16 个可执行测试脚本（见 §3）
 ```
 
 ## 3. 测试
 
 ```powershell
-# 全部（15 个脚本，纯逻辑 + 静态不变量 + offscreen 运行时冒烟 + 暗色可读性 + 退出清理 + 版面零抖动 + 交换证据链）
+# 全部（16 个脚本，纯逻辑 + 静态不变量 + offscreen 运行时冒烟 + 暗色可读性 + 退出清理 + 版面零抖动 + 交换证据链）
 Get-ChildItem tests\*.py | Where-Object { $_.Name -ne 'render_preview.py' -and $_.Name -notlike '_*' } | ForEach-Object { python $_.FullName }
 
 # 单独跑
@@ -104,6 +109,7 @@ python tests\test_close_cleanup.py        # 关闭后无残留窗口 / 无孤儿
 python tests\test_static_integrity.py     # 拆分不变量：无漏 import / 无冻结常量 / 主题广播 / 路径来源
 python tests\test_plain_and_stats.py      # 小白话术映射 + 帧率口径 + 评级 + 阈值广播
 python tests\test_swap_evidence.py        # v1.1.0：交换证据链判定 + perfmon CSV 解析/时间对齐 + 导出列契约
+python tests\test_aiask.py                # 一键问 AI：桌面路径 / 提示词内容 / 弹窗复制 / 点击端到端
                                           #   （CLI 也可单独跑：python -m stuttertriage.perfmon align --record … --perfmon …）
 python tests\test_theme.py                # 主题/热键/图表样式契约
 python tests\test_ux.py                   # 59 项 UX 契约（配置/数据源/水印/热键/黑名单/CSV/ETW/打点）
