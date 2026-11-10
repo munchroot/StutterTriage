@@ -1,15 +1,37 @@
 # StutterTriage
 
-**Windows 游戏卡顿（掉帧）一站式体检台**
+**Windows 游戏卡顿（掉帧）一站式体检台** —— 用 PresentMon + PDH/DXGI/ADL 采集，
+把「帧率掉了」翻译成玩家看得懂的一句话 + 一招解决建议。
 
-底层用 PresentMon + PDH/DXGI/ADL 采集，把「帧率掉了」翻译成玩家看得懂的一句话 + 一招解决建议。
+<p>
+  <img alt="version" src="https://img.shields.io/badge/version-1.1.2-2ea043">
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="tests" src="https://img.shields.io/badge/tests-18%20scripts%20passing-2ea043">
+  <img alt="deps" src="https://img.shields.io/badge/deps-PyQt6%20%7C%20pyqtgraph%20%7C%20numpy-informational">
+</p>
 
 > **开发**：该软件皆是由 **大肥鱼** 开发。
-
+>
 > **许可**：[MIT](LICENSE)。随包分发的 `external/PresentMon/PresentMon-x64.exe`
 > 为 Intel 官方发行版（MIT），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
-![界面预览](docs/preview_light.png)
+## 界面预览
+
+| 帧率总览（浅色） | 设置页（深色 · FlClash 卡片） | 悬浮窗 |
+|---|---|---|
+| ![总览](docs/preview_light.png) | ![设置页](docs/preview_settings_dark.png) | ![浮窗](docs/preview_float_dark.png) |
+
+## 版本迭代
+
+| 版本 | 日期 | 主要变化 | 下载 |
+|---|---|---|---|
+| **v1.1.2** | 2026-11-11 | 顶栏一键问 AI · 多选游戏（可手填 `<unknown>`）· 桌面帧过滤（dwm 不再冒充游戏）· 悬浮窗（透明度/快捷按钮）· 设置页 FlClash 卡片化 | [Release](https://github.com/munchroot/StutterTriage/releases/tag/v1.1.2) |
+| v1.1.1 | 2026-11-11 | 一键问 AI（导出桌面 CSV + 可复制专家提示词）· 标题版本化 · 修「95 帧却说帧率偏低 / 全程丝滑与顿挫并存」· 第 12 维补人话 | [Release](https://github.com/munchroot/StutterTriage/releases/tag/v1.1.1) |
+| v1.1.0 | 2026-11-10 | 内存-磁盘交换证据链（pagefile/硬缺页/磁盘延迟/队列/DWM）· perfmon 同步录制与时间对齐 · 导出 CSV 13→32 列（新增 `WallClock`） | [Release](https://github.com/munchroot/StutterTriage/releases/tag/v1.1.0) |
+| v1.0.0 | 2026-10-31 | 首个公开版本：帧时间体检 + 归因 + 硬件心跳 | [Release](https://github.com/munchroot/StutterTriage/releases/tag/v1.0.0) |
+
+完整逐版记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能一览
 
