@@ -5,7 +5,10 @@
 点击折线图上的漏帧红点后，**不再**直接弹出 11 行 5 列的可怕大表格，
 而是先弹一张高度仅 ~110px 的病历卡，只有三个大图标色块：
     ① 当时掉了多少帧   ② 罪魁祸首是谁   ③ 一招解决建议
-旁边一个小按钮「查看 11 项专业极客数据 ▸」，点了才打开完整对比表格。
+旁边一个小按钮「查看 12 项专业极客数据 ▸」，点了才打开完整对比表格。
+
+v1.1.0：新增第 12 项「内存-磁盘交换（pagefile 证据链）」—— 用 pagefile 占用、
+硬缺页、磁盘延迟/队列三项互证，回答「这次尖峰到底是不是内存交换造成的」。
 """
 from PyQt6 import QtGui
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -81,7 +84,7 @@ class MiniDiagnosisCard(QFrame):
         self.lbl_title.setStyleSheet("font-size: 12px; font-weight: bold;")
         head.addWidget(self.lbl_title)
         head.addStretch()
-        self.btn_detail = QPushButton("11 项数据 ▸")
+        self.btn_detail = QPushButton("12 项数据 ▸")
         self.btn_detail.setObjectName("MiniDetailButton")
         self.btn_detail.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_detail.clicked.connect(self.detailRequested.emit)
@@ -255,7 +258,7 @@ class ProfessionalTableDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("StutterTriage · 11 项专业归因数据")
+        self.setWindowTitle("StutterTriage · 12 项专业归因数据")
         self.resize(1240, 600)
         self.setMinimumSize(900, 380)
         lay = QVBoxLayout(self)

@@ -384,8 +384,8 @@ def main():
           win.diag_card.blk_cause.lbl_body.text())
     win._open_pro_dialog()
     pump(app, 60)
-    check("专业表格 11 行 5 列",
-          win._pro_dialog.table.rowCount() == 11 and win._pro_dialog.table.columnCount() == 5,
+    check("专业表格 12 行 5 列",
+          win._pro_dialog.table.rowCount() == 12 and win._pro_dialog.table.columnCount() == 5,
           "%dx%d" % (win._pro_dialog.table.rowCount(), win._pro_dialog.table.columnCount()))
     check("专业表格首行有内容", bool(win._pro_dialog.table.item(0, 0).text()),
           win._pro_dialog.table.item(0, 0).text())

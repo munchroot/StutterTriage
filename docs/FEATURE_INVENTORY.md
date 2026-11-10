@@ -191,7 +191,7 @@
 - `finally` 必恢复 `is_paused=False` + 按钮文案（L6412–6415，注释标 `【D1】`）。
 - 提示框：成功 `导入成功` + 长文 L6403–6408；失败 `导入失败`/`未解析出任何有效帧。\n（当前会话数据已保留，未做任何改动。）`、`读取失败`、`格式错误`。
 
-**导出** `_export_csv` L6417–6443：`getSaveFileName(..., "stuttertriage_record.csv", "CSV Files (*.csv)")`；表头（13 列，verbatim L6426–6429）：`Index, TimeInSeconds, Application, MsBetweenPresents, FPS, MsGPUBusy, MsCPUBusy, GPUBusyRatio, CPU0_Usage, VRAM_NonLocal_MB, PageIn_MBps, CacheNewFiles, DataSource`；每帧 `store.snapshot_for(fr.hw_seq)` 取硬件值（缺则 0）；`DataSource` 列写 `self._data_source`。文案 `导出成功`/`已成功导出 %d 帧对账数据！`、`导出失败`/`写入文件出错: %s`。
+**导出** `_export_csv` → `_write_record_csv`（v1.1.0 拆分，便于「perfmon 对齐」复用同一条写表路径）：`getSaveFileName(..., "stuttertriage_record.csv", "CSV Files (*.csv)")`；列定义集中在类属性 `StutterTriageWindowBase.RECORD_COLS`。**前 13 列与 v1.0.0 完全一致**（旧脚本按位置解析不会崩）：`Index, TimeInSeconds, Application, MsBetweenPresents, FPS, MsGPUBusy, MsCPUBusy, GPUBusyRatio, CPU0_Usage, VRAM_NonLocal_MB, PageIn_MBps, CacheNewFiles, DataSource`；v1.1.0 追加 19 列：`WallClock`（每帧绝对时间戳 ISO 带毫秒 —— perfmon 对齐的前提）、`HwSeq`、`MemAvail_MB`、`CPUTotal_Pct`、`PageOut_MBps`、`PagesPerSec`、`PageFaults_per_s`、`PageFile_Used_MB`、`PageFile_Pct`、`Committed_Pct`、`DiskReadLatency_ms`、`DiskWriteLatency_ms`、`DiskQueue`、`DiskRead_MBps`、`DiskWrite_MBps`、`DwmCPU_Pct`、`GameWS_MB`、`GamePF_MBps`、`SwapVerdict`（仅尖峰帧 ≥33ms 计算，取值 swap/disk/dwm/cpu/none/unknown）。每帧 `store.snapshot_for(fr.hw_seq)` 取硬件值（缺则 0）；`DataSource` 列写 `self._data_source`。文案 `导出成功`/`已成功导出 %d 帧对账数据！`、`导出失败`/`写入文件出错: %s`。
 **没有 JSON 导出**（全文件无 `json.dump` 到用户文件；`json` 仅用于 `Config`）。
 
 ### 2.9 模拟流 / 进程选择 / 暂停 / 复位

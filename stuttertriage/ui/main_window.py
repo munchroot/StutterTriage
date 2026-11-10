@@ -548,6 +548,13 @@ class StutterTriageWindow(StutterTriageWindowBase):
         eff = self.target_app
         if eff == "自动锁定主游戏":
             eff = self._auto_dom
+        # ---- v1.1.0：把锁定的游戏进程名同步给硬件线程 ----
+        # 硬件线程据此从 `\Process(*)\Working Set` / `Page Faults/sec` 里
+        # 挑出目标进程的真实内存足迹与缺页速率（换进程时自动跟着变）。
+        try:
+            self.hw_engine.set_target_app("" if not eff or eff == "自动锁定主游戏" else eff)
+        except Exception:
+            pass
         frames = self.store.visible_frames(eff)
         page_idx = self.stack.currentIndex()
 

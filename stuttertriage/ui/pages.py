@@ -20,6 +20,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton,
                              QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from .. import swapdiag
 from .. import theme as T
 from ..consts import bind_globals as _bind_const_globals
 from ..probes import cpu_count, per_core_max_mhz
@@ -679,6 +680,19 @@ class MemPage(_Page):
         self.row_io = self.kv.grid.add("读盘", size=12, role="accent")
         self.bar_io = MiniEnergyBar("读盘", "MB/s", 4.0, "accent")
         self.kv.grid.add_widget(self.bar_io)
+        # ---- v1.1.0 内存-磁盘交换证据链 ----
+        # 旧版只有「换入/换出」两条，PageIn 又是进程读文件的口径，
+        # 用户看不出「到底有没有在用页面文件」。这三行是硬证据：
+        #   页面文件  pagefile.sys 实际占用率（>60% 就开始换页了）
+        #   磁盘延迟  物理磁盘平均读/写延迟（>25ms 就会卡）
+        #   桌面合成  dwm.exe 的 CPU 占用（窗口化模式的头号抢占者）
+        self.row_pf = self.kv.grid.add("页面文件", size=12, role="purple")
+        self.bar_pf = MiniEnergyBar("页面文件", "%", 100.0, "purple")
+        self.kv.grid.add_widget(self.bar_pf, spacing_after=5)
+        self.row_disk = self.kv.grid.add("磁盘延迟", size=12, role="orange")
+        self.bar_disk = MiniEnergyBar("磁盘延迟", "ms", 50.0, "orange")
+        self.kv.grid.add_widget(self.bar_disk, spacing_after=5)
+        self.row_dwm = self.kv.grid.add("桌面合成", size=12, role="accent")
         right.addWidget(self.kv)
         right.addStretch(1)
         top.addLayout(right, stretch=1)
@@ -725,6 +739,29 @@ class MemPage(_Page):
         self.row_pg_in.set_value("%.1f MB/s" % page_in, "warn" if page_in > 8.0 else "purple")
         self.row_pg_out.set_value("%.1f MB/s" % page_out, "warn" if page_out > 8.0 else "orange")
 
+        # ---- v1.1.0 交换证据链读数 ----
+        pf_pct = float(getattr(hw, "pf_usage_pct", 0.0) or 0.0)
+        pf_used = float(getattr(hw, "pf_used_mb", 0.0) or 0.0)
+        d_read = float(getattr(hw, "disk_read_ms", 0.0) or 0.0)
+        d_write = float(getattr(hw, "disk_write_ms", 0.0) or 0.0)
+        queue = float(getattr(hw, "disk_queue", 0.0) or 0.0)
+        dwm_cpu = float(getattr(hw, "dwm_cpu", 0.0) or 0.0)
+        dwm_ws = float(getattr(hw, "dwm_ws_mb", 0.0) or 0.0)
+        self.bar_pf.set_value(pf_pct, vmax=100.0, warn=pf_pct >= SWAP_PAGEFILE_WARN_PCT)
+        self.bar_disk.set_value(max(d_read, d_write),
+                                vmax=max(50.0, max(d_read, d_write) * 1.6),
+                                warn=max(d_read, d_write) >= SWAP_DISK_LAT_WARN_MS)
+        self.row_pf.set_value(
+            ("%.0f%% · %.1f GB" % (pf_pct, pf_used / 1024.0)) if pf_used > 0 else ("%.0f%%" % pf_pct),
+            "warn" if pf_pct >= SWAP_PAGEFILE_WARN_PCT else "purple")
+        self.row_disk.set_value(
+            "读%.0f/写%.0f ms · 队列 %.1f" % (d_read, d_write, queue),
+            "warn" if (max(d_read, d_write) >= SWAP_DISK_LAT_WARN_MS
+                       or queue >= SWAP_DISK_QUEUE_WARN) else "orange")
+        self.row_dwm.set_value(
+            ("%.0f%% · %.0f MB" % (dwm_cpu, dwm_ws)) if dwm_ws > 0 else ("%.0f%%" % dwm_cpu),
+            "warn" if dwm_cpu >= DWM_CPU_WARN_PCT else "accent")
+
         # 【v1.0.2】空表必须写清"**为什么**空"，否则和"采集坏了"长得一模一样。
         # 换入 < 2 MB/s 时 HardwareEngine 刻意跳过 1200 进程遍历（省 CPU），
         # pagein_top 本来就是空的；首次触发的那一轮也还没有差值基线（全 0）。
@@ -747,6 +784,18 @@ class MemPage(_Page):
                    [[(n, None), ("%.1f" % v, T.CURRENT_THEME.bad if v > 50.0 else None)]
                     for n, v in ios])
 
+        # ---- v1.1.0：先用「pagefile + 磁盘」三条链给出可证伪的结论 ----
+        # 顺序很关键：交换/磁盘能直接解释掉帧，比笼统的「换入偏高」更靠前。
+        try:
+            swap_res = swapdiag.classify(swapdiag.sample([hw]), 0.0, 0.0)
+        except Exception:
+            swap_res = {"kind": "unknown", "severity": "NORMAL", "text": "", "advice": ""}
+        if swap_res["kind"] == "swap":
+            self.set_verdict(swap_res["text"], "danger", swap_res.get("advice", ""))
+            return
+        if swap_res["kind"] == "disk":
+            self.set_verdict(swap_res["text"], "warn", swap_res.get("advice", ""))
+            return
         if page_in > 8.0:
             self.set_verdict(
                 "🟠 内存不够 · 系统在读盘顶（换入 %.1f MB/s）" % page_in,
@@ -774,8 +823,14 @@ class MemPage(_Page):
             (commit / (commit + avail)) if (commit + avail) > 0 else 0.0)
         io_read = float(getattr(hw, "io_read_mb", 0.0) or 0.0)
         page_in = float(getattr(hw, "page_in", 0.0) or 0.0)
-        lvl = "warn" if (page_in > 8.0 or io_read > 50.0 or ratio >= 0.90) else "ok"
-        return ("内存 %.0f%% · 读盘 %.1f MB/s" % (ratio * 100.0, io_read), lvl)
+        pf_pct = float(getattr(hw, "pf_usage_pct", 0.0) or 0.0)
+        disk_ms = max(float(getattr(hw, "disk_read_ms", 0.0) or 0.0),
+                      float(getattr(hw, "disk_write_ms", 0.0) or 0.0))
+        lvl = "warn" if (page_in > 8.0 or io_read > 50.0 or ratio >= 0.90
+                         or pf_pct >= SWAP_PAGEFILE_WARN_PCT
+                         or disk_ms >= SWAP_DISK_LAT_WARN_MS) else "ok"
+        return ("内存 %.0f%% · pagefile %.0f%% · 磁盘 %.0fms"
+                % (ratio * 100.0, pf_pct, disk_ms), lvl)
 
     def restyle(self):
         super().restyle()

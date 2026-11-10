@@ -21,7 +21,9 @@ StutterTriage 4.0 —— 启动器（薄壳）
     stuttertriage/ui/accordion.py     左侧手风琴抽屉（CPU / 显卡显存 / 内存硬盘 / 网络引擎）
     stuttertriage/ui/fps_cards.py     （见 gauge.FpsCard / GradeBadge / BottleneckBar）
     stuttertriage/ui/chart.py         实时 FPS 曲线（渐变填充 + 均值虚线 + 漏帧红点）
-    stuttertriage/ui/diagnosis.py     极简卡顿病历卡 + 11 项专业对照表
+    stuttertriage/swapdiag.py         内存-磁盘交换证据链（尖峰 ↔ pagefile/磁盘/DWM 判定）
+    stuttertriage/perfmon.py          perfmon 采集模板 + perfmon CSV 与帧日志时间对齐
+    stuttertriage/ui/diagnosis.py     极简卡顿病历卡 + 12 项专业对照表
     stuttertriage/ui/plain.py         小白话术映射表
     stuttertriage/ui/base_window.py   从 3.2 原样迁移的可复用窗口逻辑（设置/CSV/ETW/热键…）
     stuttertriage/ui/main_window.py   新版主窗口（GamePP 风格版面 + 每帧刷新）

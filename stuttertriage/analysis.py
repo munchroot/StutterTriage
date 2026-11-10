@@ -7,6 +7,7 @@ from collections import deque
 import numpy as np
 from .consts import GC_LOW_UTIL, GC_SPIKE_ABS_MS, GC_SPIKE_RATIO, IO_STREAM_DANGER_MB, IO_STREAM_WARN_MB, NET_STALL_RATIO, NET_STALL_RX_KB, NON_GAME_PROCESSES, PROC_EVENT_WHITELIST
 from .models import DiffRow, FrameRecord
+from . import swapdiag
 from .stats import gpu_3d_load_pct
 from .utils import fmt_delta, human_size
 
@@ -78,6 +79,11 @@ class BaselineTracker:
         self.base_gpu_clock = 0.0        # GPU 核心频率基线（MHz），0 = 未知
         self.base_io_read_mb = 0.0       # 主进程磁盘读取基线（MB/s）
         self.base_net_rx_mb = 0.0        # 网卡接收基线（MB/s）
+        # ---- v1.1.0 交换证据链基线：用于「异常瞬间 vs 平稳期」对比 ---
+        self.base_pf_usage_pct = 0.0     # 页面文件占用率基线 (%)
+        self.base_disk_read_ms = 0.0     # 物理磁盘平均读延迟基线 (ms)
+        self.base_disk_write_ms = 0.0    # 物理磁盘平均写延迟基线 (ms)
+        self.base_dwm_cpu = 0.0          # 桌面合成器 CPU 占用基线 (%)
         self._primed = False
 
     def reset(self):
@@ -151,6 +157,11 @@ class BaselineTracker:
             "gpu_clock": 0.0,
             "io_read": 0.0,
             "net_rx": 0.0,
+            # ---- v1.1.0 交换证据链 ----
+            "pf_pct": 0.0,
+            "disk_read_ms": 0.0,
+            "disk_write_ms": 0.0,
+            "dwm_cpu": 0.0,
         }
         new_core_freq = []
         if snaps:
@@ -169,6 +180,10 @@ class BaselineTracker:
             new["gpu_clock"] = self._median(clk_vals) if clk_vals else 0.0
             new["io_read"] = self._median([getattr(s, "io_read_mb", 0.0) for s in snaps])
             new["net_rx"] = self._median([getattr(s, "net_rx_mb", 0.0) for s in snaps])
+            new["pf_pct"] = self._median([getattr(s, "pf_usage_pct", 0.0) for s in snaps])
+            new["disk_read_ms"] = self._median([getattr(s, "disk_read_ms", 0.0) for s in snaps])
+            new["disk_write_ms"] = self._median([getattr(s, "disk_write_ms", 0.0) for s in snaps])
+            new["dwm_cpu"] = self._median([getattr(s, "dwm_cpu", 0.0) for s in snaps])
             ncore = max(len(s.cpu_freq) for s in snaps)
             core = []
             for i in range(ncore):
@@ -193,6 +208,10 @@ class BaselineTracker:
             self.base_gpu_clock = new["gpu_clock"]
             self.base_io_read_mb = new["io_read"]
             self.base_net_rx_mb = new["net_rx"]
+            self.base_pf_usage_pct = new["pf_pct"]
+            self.base_disk_read_ms = new["disk_read_ms"]
+            self.base_disk_write_ms = new["disk_write_ms"]
+            self.base_dwm_cpu = new["dwm_cpu"]
             self.base_core_freq = new_core_freq
         else:
             a = self.ema
@@ -216,6 +235,12 @@ class BaselineTracker:
                     self.base_gpu_clock = new["gpu_clock"]
             self.base_io_read_mb = a * self.base_io_read_mb + (1 - a) * new["io_read"]
             self.base_net_rx_mb = a * self.base_net_rx_mb + (1 - a) * new["net_rx"]
+            self.base_pf_usage_pct = a * self.base_pf_usage_pct + (1 - a) * new["pf_pct"]
+            self.base_disk_read_ms = (a * self.base_disk_read_ms
+                                      + (1 - a) * new["disk_read_ms"])
+            self.base_disk_write_ms = (a * self.base_disk_write_ms
+                                       + (1 - a) * new["disk_write_ms"])
+            self.base_dwm_cpu = a * self.base_dwm_cpu + (1 - a) * new["dwm_cpu"]
             if new_core_freq:
                 if len(self.base_core_freq) == len(new_core_freq):
                     self.base_core_freq = [a * o + (1 - a) * n
@@ -278,6 +303,8 @@ class FrameStore:
         self._app_cnt = {}
         # ---- 会话级归因统计缓存：(帧数, 末帧对象, 基线, 结果)----
         self._corr_cache = None
+        # ---- v1.1.0 会话级交换证据缓存：(key, 结果)----
+        self._swap_cache = None
         # ---- 帧时间 numpy 镜像（环形）：count_spikes 用，避免 Python 级遍历 20000 帧 ----
         self._ft_np = np.empty(max_frames, dtype=np.float64)
         self._ft_head = 0        # 环内最旧元素位置
@@ -495,6 +522,46 @@ class FrameStore:
 
     def snapshot_for(self, seq):
         return self._snap_by_seq.get(seq)
+
+    def snapshots_between(self, t0, t1):
+        """
+        取时间戳落在 [t0, t1] 的硬件快照（bisect，O(log n) + 命中数）。
+
+        【为什么需要】单帧归因原先只看「不晚于本帧的最近一条快照」，
+        而硬件探针 0.4s 才采一轮 —— 一次 100ms 的交换尖峰很容易落在
+        两条快照相之间。v1.1.0 的交换证据链改为「尖峰前后 ±0.6s 窗口」，
+        把窗口内所有快照一起聚合，才抓得住瞬时峰值。
+        """
+        if not self._snap_ts:
+            return []
+        lo = bisect.bisect_left(self._snap_ts, t0)
+        hi = bisect.bisect_right(self._snap_ts, t1)
+        if hi <= lo:
+            return []
+        out = []
+        for i in range(lo, hi):
+            s = self._snap_by_seq.get(self._snap_seq[i])
+            if s is not None:
+                out.append(s)
+        return out
+
+    def swap_stats(self):
+        """
+        会话级交换证据统计（带缓存）。
+
+        缓存键 =(帧数, 末帧对象, 基线, 快照数)：任一变化就重算，
+        交互式点选尖峰时不会每点一次都全量扫描。
+        """
+        frames = list(self.frames)
+        key = (len(frames), frames[-1] if frames else None,
+               self.baseline.base_frametime, len(self.snapshots))
+        cache = self._swap_cache
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        st = swapdiag.session_stats(frames, self._snap_ts, list(self.snapshots),
+                                    self.baseline.base_frametime)
+        self._swap_cache = (key, st)
+        return st
 
     # ---------------- 读取 ----------------
     def visible_frames(self, target=None):
@@ -714,6 +781,24 @@ class FrameStore:
                 return False
             return hw.page_in > self.baseline.base_page_in + 40.0
 
+        def _swap_kind(f):
+            """v1.1.0：本帧 ±0.6s 窗口内的交换证据（无数据返回空串）"""
+            try:
+                snaps = self.snapshots_between(f.wall_ts - swapdiag.SAMPLE_WINDOW_S,
+                                               f.wall_ts + swapdiag.SAMPLE_WINDOW_S)
+                ev = swapdiag.sample(snaps)
+                if not ev.get("n"):
+                    return ""
+                return swapdiag.classify(ev, f.frametime, base_ft)["kind"]
+            except Exception:
+                return ""
+
+        def is_swap_disk(f):
+            return _swap_kind(f) == "swap"
+
+        def is_dwm_present(f):
+            return _swap_kind(f) == "dwm"
+
         def is_gpu_starved(f):
             if f.gpu_busy <= 0:
                 return False
@@ -727,6 +812,9 @@ class FrameStore:
             ("显存溢出", is_vram_spill),
             ("内存换入压力", is_mem_pressure),
             ("GPU 饥饿", is_gpu_starved),
+            # ---- v1.1.0：交换证据链（pagefile + 磁盘）与桌面合成 ----
+            ("内存交换(磁盘)", is_swap_disk),
+            ("桌面合成 DWM", is_dwm_present),
         ]
         out = {}
         for name, fn in checks:
@@ -1162,6 +1250,56 @@ class SnapshotDiffInspector:
             "—",
             v, s))
 
+        # ---------------- 12. 内存-磁盘交换（pagefile 证据链，v1.1.0）----------------
+        # 【为什么必须单独一行】ST 改进建议书的核心批评：旧版 CSV 的 PageIn_MBps
+        # 只统计「游戏资源文件读入」，既不含 pagefile.sys 的换入换出，也没有硬缺页、
+        # 磁盘延迟、磁盘队列 —— 于是「窗口化 >100ms 尖峰」究竟来自内存交换，还是
+        # 来自 DWM 桌面合成 / CPU 调度抢占，旧版只能靠猜。
+        # 本行用三条**互证**链路给结论：
+        #   ① pagefile 占用率 + 换入/换出（真的在用虚拟内存吗）
+        #   ② 物理磁盘延迟 + 队列（搬数据时磁盘排队了吗 → 才是卡顿的直接成因）
+        #   ③ dwm.exe CPU 占用（窗口化下的合成抢占证据）
+        # 三条全平稳时**明确写出「已排除内存交换」**，而不是含糊其辞。
+        if hw is not None:
+            snaps = store.snapshots_between(frame.wall_ts - swapdiag.SAMPLE_WINDOW_S,
+                                            frame.wall_ts + swapdiag.SAMPLE_WINDOW_S)
+            if not snaps:
+                snaps = [hw]
+            swap_ev = swapdiag.sample(snaps)
+            swap_res = swapdiag.classify(swap_ev, cur_ft, base_ft)
+            try:
+                swap_stats = store.swap_stats()
+            except Exception:
+                swap_stats = {}
+            ev_pf = _clamp_pct(swap_ev.get("pf_usage_pct", 0.0))
+            ev_rin = float(swap_ev.get("page_in", 0.0) or 0.0)
+            ev_rout = float(swap_ev.get("page_out", 0.0) or 0.0)
+            ev_dr = float(swap_ev.get("disk_read_ms", 0.0) or 0.0)
+            ev_dw = float(swap_ev.get("disk_write_ms", 0.0) or 0.0)
+            ev_q = float(swap_ev.get("disk_queue", 0.0) or 0.0)
+            ev_dwm = _clamp_pct(swap_ev.get("dwm_cpu", 0.0))
+            b_pf = _clamp_pct(getattr(base, "base_pf_usage_pct", 0.0))
+            b_dr = float(getattr(base, "base_disk_read_ms", 0.0) or 0.0)
+            b_dw = float(getattr(base, "base_disk_write_ms", 0.0) or 0.0)
+            b_dwm = _clamp_pct(getattr(base, "base_dwm_cpu", 0.0))
+            rows.append(DiffRow(
+                "内存-磁盘交换 (pagefile 证据链)",
+                ("页面文件 %.0f%% · 换入 %.1f / 换出 %.1f MB/s · 磁盘 读%.0f/写%.0f ms · "
+                 "队列 %.1f · DWM %.0f%%"
+                 % (ev_pf, ev_rin, ev_rout, ev_dr, ev_dw, ev_q, ev_dwm)),
+                ("页面文件 %.0f%% · 磁盘 读%.0f/写%.0f ms · DWM %.0f%%"
+                 % (b_pf, b_dr, b_dw, b_dwm)),
+                "%+.0f pt / 延迟 %+.0f ms" % (ev_pf - b_pf, ev_dr - b_dr),
+                ("%s —— %s" % (swap_res["text"], swapdiag.session_text(swap_stats))).strip(" ——"),
+                swap_res["severity"]))
+        else:
+            rows.append(DiffRow(
+                "内存-磁盘交换 (pagefile 证据链)",
+                "无该时刻硬件快照",
+                "—", "—",
+                "⚪ 离线导入数据没有历史 pagefile / 磁盘延迟采样，本行不可判定"
+                "（实时采集或对齐 perfmon CSV 后可判定）", "NORMAL"))
+
         return rows
 
     @staticmethod
@@ -1236,9 +1374,11 @@ class SnapshotDiffInspector:
         # v3.2 新增四个探针后，把「因果链最上游」的维度排在前面：
         # 撞墙降频 / 磁盘流式加载 / 网络同步 都能直接解释掉帧，
         # 而 GPU/CPU 忙时比更像是这些根因的"结果"。
-        cause_keys = ("GPU 核心频率", "磁盘 I/O", "网络同步", "GPU 忙时比",
-                      "显存溢出", "页面文件换入", "CPU 核心状态", "着色器编译",
-                      "引擎 GC")
+        # v1.1.0：交换证据链（pagefile + 磁盘排队）排在「页面文件换入」之前，
+        # 因为它有三项实测值互证，比单看 Pages Input/sec 更靠得住。
+        cause_keys = ("GPU 核心频率", "内存-磁盘交换", "磁盘 I/O", "网络同步",
+                      "GPU 忙时比", "显存溢出", "页面文件换入", "CPU 核心状态",
+                      "着色器编译", "引擎 GC")
         for key in cause_keys:
             for r in rows:
                 if r.dim.startswith(key) and r.severity in ("DANGER", "WARN"):

@@ -241,51 +241,54 @@ class TestDataSource(unittest.TestCase):
     def test_export_csv_contains_datasource_column(self):
         """
         导出 CSV 必须带 DataSource 列，且每行的值等于当前数据源标记。
-        （不启动整个 UI —— 直接复用 _export_csv 的写表逻辑做等价验证）
+
+        【v1.1.0 改法】不再在测试里手工抄一份表头 —— 直接调用**真实的**
+        `StutterTriageWindowBase._write_record_csv()`。以前测试自己复刻表头，
+        源码改了测试也不会红，等于没测；现在列一改就必须同步改测试。
         """
+        from stuttertriage.ui.base_window import StutterTriageWindowBase
         d = tempfile.mkdtemp(prefix="fl_export_")
         try:
             path = os.path.join(d, "out.csv")
 
             class _MiniStore(object):
                 def __init__(self):
-                    self.frames = [F.FrameRecord(1, 0.0, 0.0, "Game.exe", 1, 16.6, 10.0, 5.0)]
+                    self.frames = [F.FrameRecord(1, 0.0, 1000.0, "Game.exe", 1, 16.6, 10.0, 5.0)]
+                    self.baseline = F.FrameStore().baseline
 
                 def snapshot_for(self, seq):
                     return None
 
+                def snapshots_between(self, t0, t1):
+                    return []
+
             class _MiniWin(object):
                 store = _MiniStore()
                 _data_source = F.DATA_SOURCE_SIM
+                RECORD_COLS = StutterTriageWindowBase.RECORD_COLS
+                _wallclock = staticmethod(StutterTriageWindowBase._wallclock)
+                _write_record_csv = StutterTriageWindowBase._write_record_csv
 
             w = _MiniWin()
-            frames = list(w.store.frames)
-            with open(path, "w", encoding="utf-8-sig", newline="") as f:
-                cw = csv.writer(f)
-                cw.writerow(["Index", "TimeInSeconds", "Application", "MsBetweenPresents",
-                             "FPS", "MsGPUBusy", "MsCPUBusy", "GPUBusyRatio",
-                             "CPU0_Usage", "VRAM_NonLocal_MB", "PageIn_MBps",
-                             "CacheNewFiles", "DataSource"])
-                for fr in frames:
-                    hw = w.store.snapshot_for(fr.hw_seq)
-                    cw.writerow([fr.idx, "%.4f" % fr.t, fr.app, "%.3f" % fr.frametime,
-                                 "%.1f" % fr.fps, "%.3f" % fr.gpu_busy,
-                                 "%.3f" % fr.cpu_busy, "%.3f" % fr.gpu_busy_ratio,
-                                 "0.0", "0.0", "0.0", 0, w._data_source])
+            self.assertEqual(w._write_record_csv(path), 1)
 
             with open(path, "r", encoding="utf-8-sig", newline="") as f:
                 rows = list(csv.reader(f))
             self.assertIn("DataSource", rows[0])
-            self.assertEqual(rows[0][-1], "DataSource")
-            self.assertEqual(rows[1][-1], F.DATA_SOURCE_SIM)
+            col = rows[0].index("DataSource")
+            self.assertEqual(rows[1][col], F.DATA_SOURCE_SIM)
+            # v1.1.0：绝对时间戳 + 内存交换证据列必须存在（perfmon 对齐的前提）
+            for name in ("WallClock", "HwSeq", "PageFile_Pct", "DiskReadLatency_ms",
+                         "DiskQueue", "DwmCPU_Pct", "GameWS_MB", "SwapVerdict"):
+                self.assertIn(name, rows[0], "缺少 1.1.0 新列：%s" % name)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
     def test_export_csv_header_in_source_has_datasource(self):
-        """源码里 _export_csv 的表头必须真的包含 DataSource（防止改动被回退）"""
+        """源码里的 RECORD_COLS 必须真的包含 DataSource（防止改动被回退）"""
         src = _all_source()
-        self.assertIn('"DataSource"]', src,
-                      "_export_csv 的表头缺少 DataSource 列")
+        self.assertIn("RECORD_COLS", src, "导出列定义 RECORD_COLS 不见了")
+        self.assertIn('"DataSource",', src, "导出表头缺少 DataSource 列")
 
 
 # ==============================================================================

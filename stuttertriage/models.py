@@ -38,7 +38,17 @@ class HardwareSnapshot:
         "net_rx_mb", "net_tx_mb", "net_adapters",
         "gpu_clock", "gpu_clock_max", "gpu_temp",
         # ---- v1.0.0：CPU 封装功率（W；None = 不可用）+ 是否估算值 ----
-        "cpu_power", "cpu_power_est"
+        "cpu_power", "cpu_power_est",
+        # ---- v1.1.0：内存-磁盘交换（swap）证据链 ----
+        # 【为什么整组都是新字段】旧 CSV 只有 PageIn_MBps，那是「进程读文件」，
+        # 拿它证明不了帧尖峰来自 pagefile 交换。本节全是 PDH 实测的**系统级**
+        # 交换 / 硬缺页 / 磁盘延迟 / 桌面合成占用，是「可证伪」的证据。
+        "pf_used_mb", "pf_total_mb", "pf_usage_pct",
+        "committed_pct", "pages_per_s", "page_faults_s",
+        "disk_read_ms", "disk_write_ms", "disk_queue",
+        "disk_read_mbps", "disk_write_mbps",
+        "dwm_cpu", "dwm_ws_mb",
+        "game_proc", "game_ws_mb", "game_pf_s"
     )
 
     def __init__(self, seq=0):
@@ -90,6 +100,28 @@ class HardwareSnapshot:
         # 绝不把估算值当实测卖给用户。
         self.cpu_power = None
         self.cpu_power_est = True
+        # ---- v1.1.0 内存-磁盘交换证据链 ----
+        # pf_* ：页面文件（pagefile.sys）占用 —— 只有它变红才说明真的在用虚拟内存
+        self.pf_used_mb = 0.0
+        self.pf_total_mb = 0.0
+        self.pf_usage_pct = 0.0
+        self.committed_pct = 0.0
+        # Pages/sec（含软故障）与 Page Faults/sec 是**总览**，硬缺页看 page_in/page_out
+        self.pages_per_s = 0.0
+        self.page_faults_s = 0.0
+        # 物理磁盘实测延迟（ms）与当前队列长度 —— >25ms 就会造成可感知卡顿
+        self.disk_read_ms = 0.0
+        self.disk_write_ms = 0.0
+        self.disk_queue = 0.0
+        self.disk_read_mbps = 0.0
+        self.disk_write_mbps = 0.0
+        # 桌面合成器（dwm.exe）CPU 占用 —— 窗口化/无边框模式下抢占 GPU 与 CPU 的常客
+        self.dwm_cpu = 0.0
+        self.dwm_ws_mb = 0.0
+        # 目标游戏进程的工作集 / 缺页速率（按 PresentMon 的 Application 名回查）
+        self.game_proc = ""
+        self.game_ws_mb = 0.0
+        self.game_pf_s = 0.0
 
 
 class FrameRecord:

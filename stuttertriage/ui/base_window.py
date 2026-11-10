@@ -19,6 +19,7 @@ stuttertriage.ui.main_window.StutterTriageWindow 重新实现（GamePP 风格）
 import os
 import csv
 import time
+import tempfile
 import math
 import ctypes
 import queue
@@ -40,6 +41,8 @@ from ..engines.presentmon import PresentMonBridge, find_presentmon_binary
 from ..etw import EtwSessionManager
 from ..hotkeys import GlobalHotkeyManager, parse_hotkey
 from ..models import Event, FrameRecord
+from .. import swapdiag
+from ..perfmon import align as perfmon_align, write_template as perfmon_write_template
 from ..theme import CHART_STYLE_CAPFRAMEX, CHART_STYLE_HUD, FONT_FAMILY, PG_MENU_ZH, THEME_DEEP_SPACE, THEME_PRESETS, _mix, apply_theme_to_globals, theme_from_custom_bg
 from .pages import _set_cells
 from ..utils import BoundedQueue, DIAG, is_na, safe_float
@@ -1096,33 +1099,162 @@ class StutterTriageWindowBase(QMainWindow):
             self.btn_pause.setText("⏸ 暂停采集" if getattr(self, "_collect_started", True)
                                    else "▶ 开始采集")
 
+    # ---- v1.1.0：帧日志列 -------------------------------------------------
+    # 【兼容性铁律】前 13 列与 v1.0.0 **完全一致**（老脚本按位置解析不会崩），
+    # 1.1.0 新增的交换/磁盘/DWM 证据一律追加在后面。新增两列是关键：
+    #   · WallClock —— 每帧的**绝对时间戳**（ISO 8601 带毫秒）。PresentMon 的
+    #     TimeInSeconds 只是相对秒，没有绝对时间就无法与 perfmon CSV 对齐 ——
+    #     这正是改进建议书里「两份 CSV 用时间戳对齐」缺的那块砖。
+    #   · HwSeq —— 该帧绑定的硬件快照序号，便于回查原始快照。
+    RECORD_COLS = ("Index", "TimeInSeconds", "Application", "MsBetweenPresents", "FPS",
+                   "MsGPUBusy", "MsCPUBusy", "GPUBusyRatio", "CPU0_Usage",
+                   "VRAM_NonLocal_MB", "PageIn_MBps", "CacheNewFiles", "DataSource",
+                   "WallClock", "HwSeq", "MemAvail_MB", "CPUTotal_Pct", "PageOut_MBps",
+                   "PagesPerSec", "PageFaults_per_s", "PageFile_Used_MB", "PageFile_Pct",
+                   "Committed_Pct", "DiskReadLatency_ms", "DiskWriteLatency_ms", "DiskQueue",
+                   "DiskRead_MBps", "DiskWrite_MBps", "DwmCPU_Pct", "GameWS_MB",
+                   "GamePF_MBps", "SwapVerdict")
+
+    @staticmethod
+    def _wallclock(ts):
+        """epoch 秒 → 本地时间 ISO 字符串（毫秒精度，perfmon 对齐用）"""
+        try:
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) + '.%03d' % int(round((float(ts) % 1.0) * 1000) % 1000)
+        except Exception:
+            return ""
+
+    def _write_record_csv(self, path):
+        """
+        把当前会话的帧 + 硬件快照写成对账 CSV，返回写入的帧数。
+
+        【与 v1.0.0 的关系】列只增不改：前 13 列保持不变，SwapVerdict 等新列追加在后面。
+        `SwapVerdict` 只对尖峰帧（≥33ms）做判定 —— 平稳帧不必计算，导出更快。
+        """
+        frames = list(self.store.frames)
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(self.RECORD_COLS)
+            for fr in frames:
+                hw = self.store.snapshot_for(fr.hw_seq)
+
+                def g(name, default=0.0):
+                    try:
+                        v = getattr(hw, name, default) if hw is not None else default
+                        return default if v is None else float(v)
+                    except Exception:
+                        return default
+
+                verdict = ""
+                if fr.frametime >= swapdiag.SPIKE_ABS_MS and hw is not None:
+                    try:
+                        snaps = self.store.snapshots_between(
+                            fr.wall_ts - swapdiag.SAMPLE_WINDOW_S,
+                            fr.wall_ts + swapdiag.SAMPLE_WINDOW_S) or [hw]
+                        res = swapdiag.classify(swapdiag.sample(snaps), fr.frametime,
+                                                self.store.baseline.base_frametime)
+                        verdict = res["kind"]
+                    except Exception:
+                        verdict = ""
+                w.writerow([
+                    fr.idx, "%.4f" % fr.t, fr.app, "%.3f" % fr.frametime, "%.1f" % fr.fps,
+                    "%.3f" % fr.gpu_busy, "%.3f" % fr.cpu_busy, "%.3f" % fr.gpu_busy_ratio,
+                    "%.1f" % g("cpu0_usage"),
+                    "%.1f" % (g("vram_nonlocal") / 1048576.0),
+                    "%.2f" % g("page_in"),
+                    int(g("cache_new_files")),
+                    self._data_source,
+                    self._wallclock(fr.wall_ts),
+                    int(fr.hw_seq),
+                    "%.1f" % g("mem_avail_mb"),
+                    "%.1f" % g("cpu_total"),
+                    "%.2f" % g("page_out"),
+                    "%.1f" % g("pages_per_s"),
+                    "%.1f" % g("page_faults_s"),
+                    "%.1f" % g("pf_used_mb"),
+                    "%.1f" % g("pf_usage_pct"),
+                    "%.1f" % g("committed_pct"),
+                    "%.1f" % g("disk_read_ms"),
+                    "%.1f" % g("disk_write_ms"),
+                    "%.1f" % g("disk_queue"),
+                    "%.2f" % g("disk_read_mbps"),
+                    "%.2f" % g("disk_write_mbps"),
+                    "%.1f" % g("dwm_cpu"),
+                    "%.0f" % g("game_ws_mb"),
+                    "%.2f" % g("game_pf_s"),
+                    verdict,
+                ])
+        return len(frames)
+
     def _export_csv(self):
         path, _ = QFileDialog.getSaveFileName(self, "导出当前帧与诊断数据", "stuttertriage_record.csv", "CSV Files (*.csv)")
         if not path:
             return
         try:
-            frames = list(self.store.frames)
-            with open(path, "w", encoding="utf-8-sig", newline="") as f:
-                w = csv.writer(f)
-                # 【UX 新增】DataSource 列：杜绝把模拟/离线数据误当真实采集
-                w.writerow(["Index", "TimeInSeconds", "Application", "MsBetweenPresents", "FPS",
-                            "MsGPUBusy", "MsCPUBusy", "GPUBusyRatio", "CPU0_Usage",
-                            "VRAM_NonLocal_MB", "PageIn_MBps", "CacheNewFiles",
-                            "DataSource"])
-                for fr in frames:
-                    hw = self.store.snapshot_for(fr.hw_seq)
-                    w.writerow([
-                        fr.idx, "%.4f" % fr.t, fr.app, "%.3f" % fr.frametime, "%.1f" % fr.fps,
-                        "%.3f" % fr.gpu_busy, "%.3f" % fr.cpu_busy, "%.3f" % fr.gpu_busy_ratio,
-                        "%.1f" % (hw.cpu0_usage if hw else 0.0),
-                        "%.1f" % ((hw.vram_nonlocal / 1048576.0) if hw else 0.0),
-                        "%.2f" % (hw.page_in if hw else 0.0),
-                        (hw.cache_new_files if hw else 0),
-                        self._data_source,
-                    ])
-            QMessageBox.information(self, "导出成功", "已成功导出 %d 帧对账数据！" % len(frames))
+            n = self._write_record_csv(path)
+            QMessageBox.information(
+                self, "导出成功",
+                "已成功导出 %d 帧对账数据！\n\n"
+                "1.1.0 新增：绝对时间戳 WallClock、页面文件占用、硬缺页、磁盘延迟/队列、"
+                "DWM 占用、目标进程工作集与 SwapVerdict（尖峰帧的内存交换判定）。\n"
+                "配合 perfmon 同步录制，可在设置页点「对齐 perfmon CSV…」做时间对齐。" % n)
         except Exception as ex:
             QMessageBox.critical(self, "导出失败", "写入文件出错: %s" % ex)
+
+    # ---- v1.1.0：perfmon 同步录制 / 对齐 ----
+    def _export_perfmon_template(self):
+        """导出 perfmon 采集模板（计数器清单 + 一键 bat + 数据收集器集 XML）"""
+        d = QFileDialog.getExistingDirectory(self, "选择 perfmon 采集模板的导出目录",
+                                             os.path.expanduser("~"))
+        if not d:
+            return
+        try:
+            out_dir = os.path.join(d, "StutterTriage_perfmon")
+            # 间隔用 perfmon 模块的默认值（logman 只支持整秒；内置 PDH 心跳是 0.4s，更细）
+            written, notes = perfmon_write_template(out_dir)
+            msg = ("已导出 %d 个文件：\n%s\n\n"
+                   "下一步：① 以管理员身份运行 start_perfmon.bat 开始录制系统计数器；"
+                   "② 让 StutterTriage 采集游戏并复现卡顿；③ 运行 stop_perfmon.bat；"
+                   "④ 回到本页点「对齐 perfmon CSV…」。")
+            txt = msg % (len(written), "\n".join(written))
+            if notes:
+                txt += "\n\n注意：\n" + "\n".join(notes)
+            QMessageBox.information(self, "perfmon 模板已导出", txt)
+        except Exception as ex:
+            QMessageBox.critical(self, "导出失败", "写入 perfmon 模板出错: %s" % ex)
+
+    def _align_perfmon_csv(self):
+        """
+        把帧日志与 perfmon CSV 按绝对时间戳对齐，另存合并 CSV。
+
+        改进建议书里的「两份 CSV 用时间戳对齐」就是这一步：
+        帧日志优先用**当前会话实时导出的临时文件**（一定带 WallClock），
+        没有实时数据时才让用户手动挑一份旧日志。
+        """
+        pf, _ = QFileDialog.getOpenFileName(self, "选择 perfmon / logman 导出的 CSV", "",
+                                            "CSV Files (*.csv)")
+        if not pf:
+            return
+        rec = ""
+        try:
+            frames = list(self.store.frames)
+            if frames:
+                rec = os.path.join(tempfile.gettempdir(),
+                                   "stuttertriage_record_%s.csv" % time.strftime("%Y%m%d_%H%M%S"))
+                self._write_record_csv(rec)
+            else:
+                rec, _sel = QFileDialog.getOpenFileName(
+                    self, "当前没有实时数据，请选择一份帧日志 CSV（1.1.0 导出）", "",
+                    "CSV Files (*.csv)")
+                if not rec:
+                    return
+            out_path = os.path.splitext(pf)[0] + "_aligned.csv"
+            res = perfmon_align(rec, pf, out_path)
+            msg = "%s\n\n合并 CSV：\n%s" % (res.get("summary", ""), res.get("out_csv") or "（未写出）")
+            if res.get("perfmon_error"):
+                msg += "\n\nperfmon 解析提示：%s" % res["perfmon_error"]
+            QMessageBox.information(self, "对齐完成", msg)
+        except Exception as ex:
+            QMessageBox.critical(self, "对齐失败", "%s" % ex)
 
     def _init_ux(self):
         """加载配置、注册全局热键、检测管理员权限、检查 PresentMon"""
@@ -1680,6 +1812,31 @@ class StutterTriageWindowBase(QMainWindow):
         self._track_setting_label(pm_hint, "dim_small")
         pm_hint.setWordWrap(True)
         lay.addWidget(pm_hint)
+
+        # --- 内存交换证据链 / perfmon 同步录制（v1.1.0） ---
+        lay.addSpacing(6)
+        sw_title = QLabel("内存交换证据链（页面文件 / 硬缺页 / 磁盘延迟）")
+        self._track_setting_label(sw_title, "accent")
+        lay.addWidget(sw_title)
+        sw_hint = QLabel(
+            "PresentMon 的 CSV 只有帧时间，没有 pagefile 交换、硬缺页与磁盘延迟，"
+            "所以「>100ms 尖峰是不是内存交换造成的」必须靠 perfmon 同步录制才能证明。\n"
+            "① 点「导出 perfmon 采集模板」→ 运行其中的 start_perfmon.bat；"
+            "② 让本工具采集游戏并复现卡顿；③ 运行 stop_perfmon.bat；"
+            "④ 回来点「对齐 perfmon CSV…」，选择 perfmon 的 CSV，"
+            "即可得到每个尖峰的交换/磁盘/DWM 判定与合并 CSV。")
+        self._track_setting_label(sw_hint, "dim_small")
+        sw_hint.setWordWrap(True)
+        lay.addWidget(sw_hint)
+        sw_row = QHBoxLayout()
+        self.btn_pm_template = QPushButton("导出 perfmon 采集模板")
+        self.btn_pm_template.clicked.connect(self._export_perfmon_template)
+        self.btn_pm_align = QPushButton("对齐 perfmon CSV…")
+        self.btn_pm_align.clicked.connect(self._align_perfmon_csv)
+        sw_row.addWidget(self.btn_pm_template)
+        sw_row.addWidget(self.btn_pm_align)
+        sw_row.addStretch()
+        lay.addLayout(sw_row)
 
         # --- 全局热键（可视化改键） ---
         lay.addSpacing(6)

@@ -658,3 +658,58 @@ Capacities / windows: `FrameStore(max_frames=100000, max_snaps=20000)`; `events`
 `ui/gauge.py` 新增 `CpuFreqBars` / `VramSplitBar` / `vram_text()`；`ui/accordion.py` 已删除；
 `ui/diagnosis.MiniDiagnosisCard` 新增 `show_smooth()`（绿色「全程运行丝滑」态）与 `is_smooth_state()`。
 `chart.FpsChart` 新增 `ms_ref_lines`（16.7 / 33.3 ms 两条参考虚线）并锁死坐标轴（见 `README.md` §3.2 表）。
+
+---
+
+## 16. v1.1.0 新增契约：内存-磁盘交换证据链 & perfmon 对齐
+
+### 16.1 `models.HardwareSnapshot` 新增字段（全部有默认值 0，永不为 None）
+
+`pf_used_mb` / `pf_total_mb` / `pf_usage_pct` / `committed_pct` / `pages_per_s` / `page_faults_s` /
+`disk_read_ms` / `disk_write_ms`（**毫秒**，PDH 原生为秒，采集层已换算）/ `disk_queue` /
+`disk_read_mbps` / `disk_write_mbps` / `dwm_cpu` / `dwm_ws_mb` / `game_proc`（str）/
+`game_ws_mb` / `game_pf_s`（MB/s，4KB/页换算）。
+
+`engines.hardware.HardwareEngine.set_target_app(name: str)`：UI 线程把当前锁定的进程名交给硬件线程，
+用于从 `\Process(*)\Working Set` / `Page Faults/sec` 里取该进程的内存足迹（全名 → 去 `.exe` → 前 15 字符，逐级回退）。
+
+### 16.2 `swapdiag`（纯函数，无 UI、无全局副作用）
+
+| API | 语义 |
+|---|---|
+| `sample(snaps, fields=None) -> dict` | 把若干快照按字段取 **max** 聚合成一条证据；额外键 `n`（参与聚合的快照数）、`seq`（峰值快照序号） |
+| `snapshots_near(snap_ts, snapshots, ts, window=0.6) -> list` | `[ts-window, ts+window]` 内的快照；窗口为空时退化为最近一条 |
+| `signals(ev) -> dict` | 拆出 `swap_mem` / `swap_disk` / `dwm` / `cpu` / `available` 五个布尔与全部原始数字 |
+| `classify(ev, frametime=None, base_frametime=None) -> dict` | `{kind, severity, text, advice, ev}`；`kind ∈ swap/disk/dwm/cpu/none/unknown`；`unknown` 表示计数器缺失，**不得**解读为平稳 |
+| `session_stats(frames, snap_ts, snapshots, base_frametime, window=0.6) -> dict` | `{total, kinds, rates, verdicts, usable}`，尖峰口径 `max(33ms, 基线×1.8)` |
+| `session_text(stats) -> str` | 一句话证据文案（含 `命中/总数 (百分比·置信度)`） |
+
+常量：`SPIKE_ABS_MS = 33.0`、`SAMPLE_WINDOW_S = 0.6`。阈值全部走 `consts.bind_globals`（热更新有效，禁止 `from .consts import`）。
+
+### 16.3 `perfmon`（模板 + 解析 + 对齐，含 CLI）
+
+| API | 语义 |
+|---|---|
+| `COUNTERS` / `counter_paths()` | 16 个英文计数器的 `(路径, 用途)` 与路径列表 |
+| `write_counter_list(path)` / `write_batch(path, interval_ms=200) -> (start, stop)` | 写 `typeperf` 清单 / `logman` 一键起停 bat |
+| `write_template(out_dir, interval_ms=200, try_xml=True) -> (written, notes)` | 一次导出模板；`notes` 明确写出降级原因（如非管理员无法 `logman export`），**不假装成功** |
+| `export_datacollector_xml(path) -> (ok, msg)` | 用系统 `logman create/export/delete` 生成合法 DataCollectorSet XML |
+| `load_perfmon_csv(path, dayfirst=None) -> (samples, meta)` | 解析 perfmon/typeperf/logman CSV；`samples = [(epoch, {归一化计数器: float})]`；自动判定月/日/年顺序（`meta["dayfirst"]`） |
+| `evidence_from(vals) -> dict` | 一条采样 → `swapdiag` 证据包（页→MB/s、秒→ms 已换算，`_available=True`） |
+| `align(record_csv, perfmon_csv, out_csv=None, spike_ms=33.0, window=0.6, dayfirst=None) -> dict` | 帧日志 × perfmon 对齐；返回 `{frames, spikes, matched, kinds, summary, out_csv, rows, perfmon_samples, perfmon_error, skipped}` |
+
+CLI：`python -m stuttertriage.perfmon template -o DIR`、`python -m stuttertriage.perfmon align --record R --perfmon P [-o OUT] [--spike-ms 33] [--window 0.6] [--dayfirst]`。
+
+### 16.4 导出列契约（`StutterTriageWindowBase.RECORD_COLS`，32 列）
+
+前 13 列与 v1.0.0 **逐字一致**（旧脚本按位置解析不会崩）；新增列一律追加在后面，
+其中 `WallClock`（ISO 8601 带毫秒）是 perfmon 对齐的**唯一**时间基准，
+`SwapVerdict` 只对尖峰帧（`MsBetweenPresents ≥ 33`）计算，其余行留空字符串。
+写表入口统一为 `_write_record_csv(path) -> int`（导出与对齐共用，杜绝两份表头漂移）。
+
+### 16.5 诊断表行数
+
+`SnapshotDiffInspector.inspect()` 由 11 行变为 **12 行**，第 12 行维度名固定为
+`内存-磁盘交换 (pagefile 证据链)`（`banner_verdict` 的 `cause_keys` 用 `startswith("内存-磁盘交换")` 匹配，
+重命名时必须同步改 `analysis.SnapshotDiffInspector.banner_verdict`）。
+

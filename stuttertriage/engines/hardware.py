@@ -52,6 +52,8 @@ class HardwareEngine(threading.Thread):
         self._clk_ema = None                 # GPU 频率 EMA 基线（撞墙判定用）
         self._clk_peak = 0                   # 本次会话观察到的峰值频率
         self._io_keep = 20                   # 每轮保留的 IO Top-K 进程（控内存）
+        # ---- v1.1.0：当前锁定的游戏进程名（由 UI 线程写入，只读属性语义）----
+        self._target_app = ""
 
     def stop(self):
         self._stop_evt.set()
@@ -92,6 +94,28 @@ class HardwareEngine(threading.Thread):
             ("p_io_oth", r"\Process(*)\IO Other Bytes/sec"),
             ("net_rx",   r"\Network Interface(*)\Bytes Received/sec"),
             ("n_tx",     r"\Network Interface(*)\Bytes Sent/sec"),
+            # ---- v1.1.0 内存-磁盘交换（swap）证据链 ----
+            # 【为什么要补这一组】PresentMon CSV 里的 PageIn_MBps 只是「进程读文件」，
+            # 不含 pagefile.sys 的换入/换出；旧版本因此无法证明 >100ms 尖峰来自内存交换。
+            # 下面全是 PDH **系统级** 计数器（英文名，AddEnglishCounter 不依赖系统语言）：
+            #   pf_pct       页面文件占用率 —— 只有它升高才说明真的在用虚拟内存
+            #   m_pages/m_faults  Pages/sec 与 Page Faults/sec（含软故障的总览）
+            #   pd_read/pd_write  物理磁盘平均读/写延迟（PDH 单位是秒，采集后换算 ms）
+            #   pd_queue     当前磁盘队列长度（>2 说明 IO 排队）
+            #   dwm_cpu      桌面合成器 CPU 占用（窗口化 / 无边框模式的头号抢占嫌疑）
+            #   p_ws/p_pf    进程工作集与缺页速率（拿目标游戏与 dwm 的真实足迹）
+            ("pf_pct",   r"\Paging File(_Total)\% Usage"),
+            ("m_pages",  r"\Memory\Pages/sec"),
+            ("m_faults", r"\Memory\Page Faults/sec"),
+            ("m_commitpct", r"\Memory\% Committed Bytes In Use"),
+            ("pd_read",  r"\PhysicalDisk(_Total)\Avg. Disk sec/Read"),
+            ("pd_write", r"\PhysicalDisk(_Total)\Avg. Disk sec/Write"),
+            ("pd_queue", r"\PhysicalDisk(_Total)\Current Disk Queue Length"),
+            ("pd_rd_b",  r"\PhysicalDisk(_Total)\Disk Read Bytes/sec"),
+            ("pd_wr_b",  r"\PhysicalDisk(_Total)\Disk Write Bytes/sec"),
+            ("dwm_cpu",  r"\Process(dwm)\% Processor Time"),
+            ("p_ws",     r"\Process(*)\Working Set"),
+            ("p_pf",     r"\Process(*)\Page Faults/sec"),
         ]
         if not self.s.open(specs):
             self._emit(time.time(), "系统", "PDH 计数器打开失败，硬件探针以降级模式运行",
@@ -127,6 +151,8 @@ class HardwareEngine(threading.Thread):
             # ---- v3.2 新探针：磁盘 I/O + 网络 + GPU 频率 ----
             self._io_net(snap)
             self._clock(snap)
+            # ---- v1.1.0 内存-磁盘交换证据链（pagefile / 硬缺页 / 磁盘延迟 / DWM）----
+            self._swap_disk(snap)
             cache_res = self.cache_w.scan()
             snap.cache = cache_res
             snap.cache_new_files = cache_res.get("_tot_new_files", 0)
@@ -336,6 +362,52 @@ class HardwareEngine(threading.Thread):
                                   "若同时伴随帧时间升高，则为撞墙降频",
                            severity="DANGER", cooldown_key=("gputhrottle",), cooldown=15.0,
                            symbol="v")
+
+        # ---------------- v1.1.0 新探针 5：内存-磁盘交换（pagefile）----------------
+        # 【为什么不复用第 5 条「页面文件换入」】第 5 条的 pin 来自 Memory\Pages Input/sec，
+        # 单看它无法区分「游戏在流式加载资产」与「内存不足在换页」。这里要求：
+        #   ① pagefile 占用率 ≥ 危险门槛（虚拟内存真的在被使用）；
+        #   ② 确实存在换入或换出（Pages Input/Output 任一达标）；
+        #   ③ 物理磁盘延迟或队列同时升高才升级成 DANGER —— 因为只有磁盘排队
+        #      才会把 CPU 线程直接阻塞成可见卡顿。任一条不成立都不报。
+        swap_mem = (s.pf_usage_pct >= SWAP_PAGEFILE_DANGER_PCT
+                    and (s.page_in >= SWAP_PAGES_IN_MIN_MB
+                         or s.page_out >= SWAP_PAGES_OUT_MIN_MB))
+        disk_bad = (s.disk_read_ms >= SWAP_DISK_LAT_WARN_MS
+                    or s.disk_write_ms >= SWAP_DISK_LAT_WARN_MS
+                    or s.disk_queue >= SWAP_DISK_QUEUE_WARN)
+        if swap_mem and disk_bad:
+            self._emit(now, "内存交换",
+                       "页面文件占用 %.0f%% 且磁盘延迟 读%.0f/写%.0fms（队列 %.1f）"
+                       " —— 内存不足正在与硬盘倒腾数据"
+                       % (s.pf_usage_pct, s.disk_read_ms, s.disk_write_ms, s.disk_queue),
+                       advice="物理内存不足触发页面文件交换：关闭高占内存后台程序，"
+                              "或加装物理内存；同时确认页面文件所在磁盘是 SSD",
+                       severity="DANGER", cooldown_key=("swap",), cooldown=15.0, symbol="p")
+        elif swap_mem:
+            self._emit(now, "内存交换",
+                       "页面文件占用 %.0f%% · 换入 %.1f / 换出 %.1f MB/s（磁盘尚未排队）"
+                       % (s.pf_usage_pct, s.page_in, s.page_out),
+                       advice="已开始使用虚拟内存，继续恶化就会卡顿：优先释放内存",
+                       severity="WARN", cooldown_key=("swap_mem",), cooldown=20.0, symbol="p")
+        elif (s.disk_read_ms >= SWAP_DISK_LAT_DANGER_MS
+              or s.disk_write_ms >= SWAP_DISK_LAT_DANGER_MS):
+            self._emit(now, "磁盘延迟",
+                       "物理磁盘平均延迟 读 %.0f ms / 写 %.0f ms（队列 %.1f）"
+                       % (s.disk_read_ms, s.disk_write_ms, s.disk_queue),
+                       advice="磁盘排队严重：检查是否有下载/解压/杀毒扫描占用同一块盘，"
+                              "或把游戏换到 NVMe 固态硬盘",
+                       severity="DANGER", cooldown_key=("disklat",), cooldown=15.0, symbol="d")
+
+        # ---------------- v1.1.0 新探针 6：桌面合成器抢占（DWM）----------------
+        # 窗口化 / 无边框全屏时，DWM 每帧都要合成一次，GPU 与 CPU 都会被分走一块。
+        # 这里只在「DWM 占用显著 + 3D 负载不低」时提示，避免把桌面空闲误报。
+        if s.dwm_cpu >= DWM_CPU_WARN_PCT and load3d >= GPU_DOWNCLOCK_MIN_3D_LOAD:
+            self._emit(now, "桌面合成",
+                       "桌面合成器 dwm.exe 占用 %.0f%% CPU（3D 负载 %.0f%%）—— 正在与游戏抢帧"
+                       % (s.dwm_cpu, load3d),
+                       advice="改用「独占全屏」或关闭动态壁纸/透明特效，可显著降低窗口模式下的合成开销",
+                       severity="WARN", cooldown_key=("dwm",), cooldown=20.0, symbol="x")
 
     # ---------------- 分类采集 ----------------
     def _gpu(self, s):
@@ -573,3 +645,116 @@ class HardwareEngine(threading.Thread):
         s.mem_limit = one("m_limit")
         s.page_in = pages_to_mb_per_s(one("m_pin"))
         s.page_out = pages_to_mb_per_s(one("m_pout"))
+
+    # ==========================================================================
+    # v1.1.0 内存-磁盘交换证据链（pagefile / 硬缺页 / 磁盘延迟 / DWM）
+    # ==========================================================================
+    def set_target_app(self, name):
+        """
+        由 UI 线程告知「当前锁定的游戏进程名」（PresentMon 的 Application 列）。
+
+        只写一个属性、不加锁：最坏情况是慢一个采样周期，绝不会读到半截字符串
+        （CPython 里 str 赋值本身是原子的）。
+        """
+        try:
+            self._target_app = str(name or "")
+        except Exception:
+            self._target_app = ""
+
+    @staticmethod
+    def _phys_total_mb():
+        """物理内存总量（MB）；GetPhysicallyInstalledSystemMemory 不依赖 PDH 语言。"""
+        try:
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(st)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return 0.0, 0.0
+            return (st.ullTotalPhys / 1048576.0, st.ullTotalPageFile / 1048576.0)
+        except Exception:
+            return 0.0, 0.0
+
+    def _swap_disk(self, s):
+        """
+        采集「内存-磁盘交换」与「桌面合成」证据（v1.1.0）。
+
+        【设计红线】这里只采**可证伪的实测值**，任何一项读不到就留 0 并让
+        `swapdiag` 判定为「不可判定」，绝不拿 0 去参与「交换致卡」的正向结论。
+
+        【单位】PDH 的 `Avg. Disk sec/Read|Write` 返回秒 → ×1000 换成毫秒；
+        `Disk Read/Write Bytes/sec` 返回字节 → ÷1MiB 换成 MB/s。
+        """
+        def one(key, default=0.0):
+            try:
+                arr = self.s.array(key)
+                if not arr:
+                    return default
+                return float(next(iter(arr.values()), default) or default)
+            except Exception:
+                return default
+
+        try:
+            s.pf_usage_pct = max(0.0, min(100.0, one("pf_pct")))
+            phys_mb, pagefile_total_mb = self._phys_total_mb()
+            if pagefile_total_mb > phys_mb > 0:
+                s.pf_total_mb = pagefile_total_mb - phys_mb
+            s.pf_used_mb = s.pf_total_mb * s.pf_usage_pct / 100.0
+            s.committed_pct = max(0.0, min(100.0, one("m_commitpct")))
+            s.pages_per_s = max(0.0, one("m_pages"))
+            s.page_faults_s = max(0.0, one("m_faults"))
+            s.disk_read_ms = max(0.0, one("pd_read")) * 1000.0
+            s.disk_write_ms = max(0.0, one("pd_write")) * 1000.0
+            s.disk_queue = max(0.0, one("pd_queue"))
+            s.disk_read_mbps = max(0.0, one("pd_rd_b")) / 1048576.0
+            s.disk_write_mbps = max(0.0, one("pd_wr_b")) / 1048576.0
+            try:
+                dw = self.s.array("dwm_cpu") or {}
+                s.dwm_cpu = max(0.0, min(100.0, float(next(iter(dw.values()), 0.0) or 0.0)))
+            except Exception:
+                s.dwm_cpu = 0.0
+        except Exception as ex:
+            DIAG.report("HardwareEngine._swap_disk(mem-disk)", ex)
+
+        # ---- 进程工作集 / 缺页速率：目标游戏 + dwm ----
+        # Process 对象的实例名形如 `chrome#1234`（#后是同名实例序号，不是 PID），
+        # 因此一律剥掉 # 后缀、按进程名小写聚合求和。
+        try:
+            ws = self.s.array("p_ws") or {}
+            pf = self.s.array("p_pf") or {}
+            ws_by, pf_by = {}, {}
+            for src, dst in ((ws, ws_by), (pf, pf_by)):
+                for inst, v in src.items():
+                    if not inst or str(inst).startswith("_"):
+                        continue
+                    name = str(inst).split("#")[0].strip().lower()
+                    if not name or name == "idle":
+                        continue
+                    try:
+                        dst[name] = dst.get(name, 0.0) + max(0.0, float(v or 0.0))
+                    except Exception:
+                        continue
+            if not ws_by:
+                return
+            s.dwm_ws_mb = ws_by.get("dwm", 0.0) / 1048576.0
+            tgt = (self._target_app or "").lower()
+            cands = [c for c in (tgt,
+                                 tgt[:-4] if tgt.endswith(".exe") else tgt,
+                                 tgt[:15]) if c]
+            for cand in cands:
+                if cand in ws_by:
+                    s.game_proc = cand
+                    s.game_ws_mb = ws_by.get(cand, 0.0) / 1048576.0
+                    # Page Faults/sec 是「次/秒」，这里换算成 MB/s（4KB/页）
+                    s.game_pf_s = pf_by.get(cand, 0.0) * 4096.0 / 1048576.0
+                    break
+        except Exception as ex:
+            DIAG.report("HardwareEngine._swap_disk(proc)", ex)

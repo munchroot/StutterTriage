@@ -139,24 +139,17 @@ def main():
         win.store.frames.append(F.FrameRecord(i + 1, i * 0.016, 1000.0 + i,
                                                "Imported.exe", 1, 16.6, 10.0, 5.0))
     win._data_source = F.DATA_SOURCE_OFFLINE
-    # 直接调 _export_csv 的等价写入路径（避免 QFileDialog 阻塞）
-    frames = list(win.store.frames)
-    with open(out, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["Index", "TimeInSeconds", "Application", "MsBetweenPresents", "FPS",
-                    "MsGPUBusy", "MsCPUBusy", "GPUBusyRatio", "CPU0_Usage",
-                    "VRAM_NonLocal_MB", "PageIn_MBps", "CacheNewFiles", "DataSource"])
-        for fr in frames:
-            hw = win.store.snapshot_for(fr.hw_seq)
-            w.writerow([fr.idx, "%.4f" % fr.t, fr.app, "%.3f" % fr.frametime,
-                        "%.1f" % fr.fps, "%.3f" % fr.gpu_busy, "%.3f" % fr.cpu_busy,
-                        "%.3f" % fr.gpu_busy_ratio, "0.0", "0.0", "0.0", 0,
-                        win._data_source])
+    # 直接调**真实**写入路径（v1.1.0 起不再在测试里复刻表头）
+    win._write_record_csv(out)
     with open(out, "r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.reader(f))
     check("CSV 表头含 DataSource", "DataSource" in rows[0])
-    check("CSV 每行都带数据源", all(r[-1] == F.DATA_SOURCE_OFFLINE for r in rows[1:]),
-          "-> %r" % (rows[1][-1] if len(rows) > 1 else None))
+    di = rows[0].index("DataSource") if "DataSource" in rows[0] else -1
+    check("CSV 每行都带数据源", all(r[di] == F.DATA_SOURCE_OFFLINE for r in rows[1:]),
+          "-> %r" % (rows[1][di] if len(rows) > 1 and di >= 0 else None))
+    check("CSV 含绝对时间戳列（perfmon 对齐前提）", "WallClock" in rows[0])
+    check("CSV 含内存交换证据列", "PageFile_Pct" in rows[0] and "DiskReadLatency_ms" in rows[0],
+          "-> 缺列")
 
     # ---- 其它 UI 元素 ----
     print("== 7. 其它 UX 元素 ==")

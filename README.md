@@ -14,8 +14,15 @@
 ## 功能一览
 
 - **帧时间体检**：FPS / 1% Low / 0.1% Low / 帧耗时 P99，实时曲线可滚轮缩放
-- **卡顿归因**：把尖峰拆成 11 个维度（显存溢出 / CPU 单核拥堵 / 撞墙降频 /
-  着色器编译 / 内存换页 …），给出**一句话结论 + 一招建议**
+- **卡顿归因**：把尖峰拆成 12 个维度（显存溢出 / CPU 单核拥堵 / 撞墙降频 /
+  着色器编译 / 内存交换 / 磁盘排队 …），给出**一句话结论 + 一招建议**
+- **内存-磁盘交换证据链**（v1.1.0）：页面文件占用、硬缺页（Pages Input/Output）、
+  物理磁盘延迟与队列、`dwm.exe` 桌面合成占用四项**实测互证** —— 不再拿
+  「进程读文件速率」冒充内存交换，而是明确回答「这次尖峰是不是内存交换」；
+  若交换链路全平稳，界面会直接写「已排除内存交换」，并指出更可疑的是磁盘还是 DWM/CPU
+- **perfmon 同步对齐**（v1.1.0）：一键导出 perfmon 采集模板（计数器清单 + 一键 bat +
+  数据收集器集 XML），录制结束后把帧日志与 perfmon CSV 按**绝对时间戳**对齐，
+  逐尖峰输出「交换 / 磁盘 / DWM / 已排除」判定并另存合并 CSV
 - **硬件心跳**：CPU 每核频率与占用、GPU 频率温度显存、内存换页、磁盘与网络
 - **事件流**：自动告警 + 手动打点（全局热键）历史，可回看定位
 - **CSV 回放**：导入 CapFrameX / PresentMon 导出的 CSV 离线分析
@@ -55,7 +62,9 @@ stuttertriage/
   etw.py                    ETW 会话管家（根治 PresentMon error 1450 静默 0 帧）
   engines/hardware.py       HardwareEngine 轮询线程（CPU/GPU/显存/IO/网络/缓存/功率）
   engines/presentmon.py     PresentMon 定位与能力探测 + PresentMonBridge 采集线程
-  analysis.py               BaselineTracker / FrameStore / SnapshotDiffInspector（11 维归因）
+  analysis.py               BaselineTracker / FrameStore / SnapshotDiffInspector（12 维归因）
+  swapdiag.py               内存-磁盘交换证据链：尖峰 ↔ pagefile/磁盘/DWM 的可证伪判定（纯函数）
+  perfmon.py                perfmon 采集模板（txt/bat/xml）+ perfmon CSV 解析 + 帧日志时间对齐（含 CLI）
   config.py                 stuttertriage_config.json 读写与回落
   hotkeys.py                全局热键（RegisterHotKey + 原生事件过滤器）
   winadmin.py               管理员权限 / PresentMon 指引 / 数据源判定 / 模拟水印
@@ -68,7 +77,7 @@ stuttertriage/
   ui/gauge.py               GamePP 风格图形元件（胶囊条/圆环/能量柱/频率柱/显存大横条/段位徽章）
   ui/chart.py               实时 FPS 曲线（渐变填充 + 均值虚线 + 顿挫红点 + 锁死坐标轴）
   ui/cpu_trend.py           CPU 折线：均频/功率总览 + 每线程一条（可滚动）折线
-  ui/diagnosis.py           极简卡顿病历卡（idle/红/绿三态，高度恒定）+ 11 项专业对照表窗口
+  ui/diagnosis.py           极简卡顿病历卡（idle/红/绿三态，高度恒定）+ 12 项专业对照表窗口
   ui/plain.py               小白话术映射表（专业归因 → 人话 + 解决建议）
   ui/widgets.py             通用可视化组件（CPU 热力块矩阵 / ElidedLabel / 探针读数条 / 进度条）
   app.py                    进程入口 main()
@@ -76,13 +85,13 @@ docs/                       设计资料（引擎 API 契约、迁移期 UI 清�
 assets/                     打包用图标（stuttertriage.ico 多尺寸 + 256px PNG 源图）
 build_tools/                打包脚本与 PyInstaller 配置（build_exe.ps1 / StutterTriage.spec / version_info.txt）
 dist/                       打包产物（StutterTriage.exe 单文件；旁边可放 stuttertriage_config.json）
-tests/                      14 个可执行测试脚本（见 §4）
+tests/                      15 个可执行测试脚本（见 §3）
 ```
 
 ## 3. 测试
 
 ```powershell
-# 全部（14 个脚本，纯逻辑 + 静态不变量 + offscreen 运行时冒烟 + 暗色可读性 + 退出清理 + 版面零抖动）
+# 全部（15 个脚本，纯逻辑 + 静态不变量 + offscreen 运行时冒烟 + 暗色可读性 + 退出清理 + 版面零抖动 + 交换证据链）
 Get-ChildItem tests\*.py | Where-Object { $_.Name -ne 'render_preview.py' -and $_.Name -notlike '_*' } | ForEach-Object { python $_.FullName }
 
 # 单独跑
@@ -94,6 +103,8 @@ python tests\test_dark_settings_readability.py  # 暗色主题下 菜单/设置�
 python tests\test_close_cleanup.py        # 关闭后无残留窗口 / 无孤儿 PresentMon（含 Job 联动杀验证）
 python tests\test_static_integrity.py     # 拆分不变量：无漏 import / 无冻结常量 / 主题广播 / 路径来源
 python tests\test_plain_and_stats.py      # 小白话术映射 + 帧率口径 + 评级 + 阈值广播
+python tests\test_swap_evidence.py        # v1.1.0：交换证据链判定 + perfmon CSV 解析/时间对齐 + 导出列契约
+                                          #   （CLI 也可单独跑：python -m stuttertriage.perfmon align --record … --perfmon …）
 python tests\test_theme.py                # 主题/热键/图表样式契约
 python tests\test_ux.py                   # 59 项 UX 契约（配置/数据源/水印/热键/黑名单/CSV/ETW/打点）
 python tests\test_regression.py           # 阻断级缺陷回归（时间轴单位、导入失败复位、基线鲁棒性…）
@@ -143,7 +154,32 @@ pwsh -File build_tools\build_exe.ps1 -RebuildVenv
 > 提示：普通双击启动时，程序会在 700ms 后弹一次「以管理员身份运行可获得完整采集能力」的提醒
 > （ETW 需要管理员）。**右键 exe → 以管理员身份运行** 就不会有这个提醒。
 
-## 5. 配置与日志
+## 5. 内存-磁盘交换与 perfmon 对齐（v1.1.0）
+
+PresentMon 的 CSV 只有帧时间，**没有** Windows 的页面文件交换、硬缺页、磁盘延迟与队列，
+所以「窗口化时 >100ms 的尖峰到底是不是内存交换造成的」必须靠系统计数器证明。v1.1.0 把这条链路做进软件：
+
+1. **采集**：硬件心跳新增 pagefile 占用、Pages Input/Output、物理磁盘读/写延迟与队列、
+   `dwm.exe` 占用、目标游戏工作集/缺页速率（全部是 PDH 英文计数器，中英文 Windows 通用）。
+2. **诊断**：归因表第 12 行「内存-磁盘交换（pagefile 证据链）」用三条链路互证：
+   交换链路（pagefile%/硬缺页）+ 磁盘链路（延迟/队列）+ 合成链路（DWM）。
+   交换与磁盘同时升高 → DANGER；全部平稳 → 明确写「已排除内存交换」，并指出磁盘还是 DWM/CPU 更可疑。
+3. **导出**：`stuttertriage_record.csv` 从 13 列扩到 32 列，前 13 列一字不改；
+   关键是新增 `WallClock`（每帧绝对时间戳），这是与 perfmon 对齐的前提。
+4. **对齐**：设置页 → 内存交换证据链：
+   - 「导出 perfmon 采集模板」→ 得到 `perfmon_counters.txt` + `start/stop_perfmon.bat` + 数据收集器集 XML；
+   - 录完游戏后「对齐 perfmon CSV…」→ 逐尖峰输出「交换 / 磁盘 / DWM / 已排除」，并另存 `*_aligned.csv`。
+
+命令行也行（改进书里的「Python 脚本对齐」）：
+
+```powershell
+python -m stuttertriage.perfmon template -o .\perfmon_template
+python -m stuttertriage.perfmon align --record stuttertriage_record.csv --perfmon perfmon_xxx.csv -o merged.csv
+```
+
+逐条设计取舍与阈值口径见 [docs/UPGRADE_1.1.0.md](docs/UPGRADE_1.1.0.md)。
+
+## 6. 配置与日志
 
 | 文件 | 位置 | 说明 |
 |---|---|---|
@@ -153,7 +189,7 @@ pwsh -File build_tools\build_exe.ps1 -RebuildVenv
 路径来源统一由 `stuttertriage/paths.py` 提供（拆分后踩过的坑：`__file__` 变成包目录，
 配置被写进 `stuttertriage/` 导致用户旧配置失效）。
 
-## 6. 参与贡献
+## 7. 参与贡献
 
 欢迎提交 Issue 与 Pull Request。
 
@@ -188,7 +224,7 @@ Get-ChildItem tests\*.py | ForEach-Object { python $_.FullName }
 ```
 
 > `tests/render_preview.py` 必须用 `QT_QPA_PLATFORM=windows` 跑（offscreen 渲染不出中文字体）。
-## 7. 已知限制
+## 8. 已知限制
 
 - 仅 Windows；真实采集需要 PresentMon（本仓库已内置）与（完整 ETW 场景下的）管理员权限。
 - **PyQt6 采用 GPL-3.0 / 商业双许可**。本项目以 MIT 发布；若你打算将其用于**闭源商业软件**，
@@ -201,6 +237,10 @@ Get-ChildItem tests\*.py | ForEach-Object { python $_.FullName }
   或「🧹 清空重采」才复位。
 - 显卡频率门控依赖驱动上报（AMD ADL / NVIDIA NVML）；本机未上报时该行标注「不可判定」，
   不会给出假结论。
+- **内存交换证据链的口径**：pagefile 占用率、Pages Input/Output、磁盘延迟与队列全部来自
+  PDH 系统级计数器（0.4s 一轮）。硬件采样粒度本就粗于几十毫秒的尖峰，因此本工具给出的是
+  「会话级重合率 + 单帧 ±0.6s 窗口证据」，并明确标注置信度与「不可判定」——
+  需要事件级精度请看 Microsoft PIX；需要逐帧对齐请用 v1.1.0 的 perfmon 对齐功能。
 - **单文件 EXE 被强杀会残留 `%TEMP%\_MEI*`**（约 120 MB/次）——这是 PyInstaller 单文件模式的
   固有行为（解包目录靠正常退出时清理）。正常关闭不残留；强杀后可手动删掉 `%TEMP%\_MEI*`。
 - PresentMon 与 ETW 会话已用 Job Object 兜底：StutterTriage 一死它们必然跟着结束；

@@ -109,14 +109,21 @@ def test_brand():
     print("== 1. 品牌与版本：StutterTriage 1.0.0 ==")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     win = StutterTriageWindow()
-    check("__version__ = 1.0.0", stuttertriage.__version__ == "1.0.0", stuttertriage.__version__)
+    # v1.1.0：版本号只允许「与 pyproject/源码一致」，不再写死 1.0.0 ——
+    # 升级时这里跟着 __init__ 走，避免「代码升了版本、测试还在守 1.0.0」。
+    check("__version__ 与 1.1.x 一致", stuttertriage.__version__.startswith("1.1."),
+          stuttertriage.__version__)
     title = win.windowTitle()
     check("窗口标题 = StutterTriage 1.0.0 …", title.startswith("StutterTriage 1.0.0"), title)
     check("标题里没有旧品牌「卡顿减减」", "卡顿减减" not in title, title)
     check("侧栏 LOGO 也没有旧品牌", "卡顿减减" not in win.lbl_logo.text(), win.lbl_logo.text())
     with open(os.path.join(ROOT, "build_tools", "version_info.txt"), "r", encoding="utf-8") as f:
         vi = f.read()
-    check("version_info 里是 1.0.0.0", "1, 0, 0, 0" in vi and "1.0.0.0" in vi)
+    major_minor = ".".join(stuttertriage.__version__.split(".")[:2])
+    nums = tuple(int(x) for x in stuttertriage.__version__.split(".")[:3])
+    check("version_info 与 __version__ 同步",
+          ("%d, %d, %d, 0" % nums) in vi and ("%s.0" % major_minor) in vi,
+          "%d, %d, %d, 0 / %s.0" % (nums + (major_minor,)))
     check("version_info 里没有旧品牌", "卡顿减减" not in vi)
     win.close()
     win.deleteLater()
@@ -718,7 +725,7 @@ def test_font_tokens():
 
 
 def test_pro_table():
-    """§12 v1.0.2：11 项归因表 —— 不许横滚 / 不许灰字 / 行高按内容 / 底色跟主题"""
+    """§12 v1.0.2：12 项归因表 —— 不许横滚 / 不许灰字 / 行高按内容 / 底色跟主题"""
     print("== 12. 归因表可读性（用户截图返修）==")
     from PyQt6.QtCore import Qt
     from stuttertriage.analysis import DiffRow
@@ -729,7 +736,8 @@ def test_pro_table():
     win = StutterTriageWindow()
     dlg = ProfessionalTableDialog(win)
     rows = []
-    for i in range(11):
+    # v1.1.0：11 维 → 12 维（第 12 维是「内存-磁盘交换 (pagefile 证据链)」）
+    for i in range(12):
         sev = "DANGER" if i == 0 else ("WARN" if i == 1 else "NORMAL")
         rows.append(DiffRow("维度%d" % i, "12.3 ms", "6.8 ms", "+5.5 ms",
                             "🟠 明显微卡，请降低【阴影】质量" * 3, sev))
@@ -748,7 +756,8 @@ def test_pro_table():
     check("行高按内容自动伸缩",
           dlg.table.verticalHeader().sectionResizeMode(0)
           == QHeaderView.ResizeMode.ResizeToContents)
-    check("11 行齐全", dlg.table.rowCount() == 11, str(dlg.table.rowCount()))
+    # v1.1.0：11 维 → 12 维（新增「内存-磁盘交换 (pagefile 证据链)」）
+    check("12 行齐全", dlg.table.rowCount() == 12, str(dlg.table.rowCount()))
 
     no_brush = 0
     for r in range(dlg.table.rowCount()):

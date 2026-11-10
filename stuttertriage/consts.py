@@ -61,6 +61,23 @@ GPU_DOWNCLOCK_MIN_BASE_MHZ = 1200.0  # 基线核心频率 < 此值 → 省电待
 GPU_DOWNCLOCK_MIN_3D_LOAD  = 60.0    # 3D 引擎负载 < 此值 → 正常节能，跳过降频判定
 
 
+# ---- v1.1.0 新增：内存-磁盘交换（swap）证据链阈值 ---------------------------
+# 【为什么要这一组】ST 改进建议书指出：PresentMon / 旧 CSV 里的 PageIn_MBps
+# 只统计「游戏资源文件读入」，**不包含 Windows 页面文件（pagefile.sys）换入换出**，
+# 也没有硬缺页、磁盘延迟、磁盘队列。于是「>100ms 尖峰」到底来自内存交换还是
+# DWM 桌面合成 / CPU 调度抢占，只能靠猜。v1.1.0 补上 PDH 侧真实交换与磁盘指标，
+# 并把「尖峰帧 ↔ 交换指标」做成**可证伪**的重合率结论。
+SWAP_PAGEFILE_WARN_PCT   = 60.0     # 页面文件占用率 ≥ 60% → 交换压力预警
+SWAP_PAGEFILE_DANGER_PCT = 80.0     # ≥ 80% → 页面文件快满，交换严重
+SWAP_PAGES_IN_MIN_MB     = 8.0      # Pages Input/sec ≥ 8 MB/s → 确实在从磁盘换入
+SWAP_PAGES_OUT_MIN_MB    = 20.0      # Pages Output/sec ≥ 20 MB/s → 确实在写出到磁盘
+SWAP_DISK_LAT_WARN_MS    = 25.0     # 物理磁盘平均读/写延迟 ≥ 25ms → 卡顿级排队
+SWAP_DISK_LAT_DANGER_MS  = 50.0     # ≥ 50ms → 严重磁盘阻塞
+SWAP_DISK_QUEUE_WARN     = 2.0      # 物理磁盘当前队列长度 ≥ 2 → IO 排队
+DWM_CPU_WARN_PCT         = 12.0     # dwm.exe（桌面合成）CPU 占用 ≥ 12% → 抢占嫌疑
+SWAP_COINCIDE_MIN_RATE   = 0.60     # 会话级「交换致卡」高置信重合率门槛
+
+
 GC_LOW_UTIL         = 20.0          # GPU/CPU 忙时比同时 < 20% 视为「都没干活」
 
 
@@ -204,7 +221,13 @@ LIVE_CONST_NAMES = ("SPILL_THRESHOLD", "FREQ_DROP_RATIO", "CACHE_BURST_FILES",
                     # ---- v4.1 判定算法阈值（必须登记，否则热更新广播不到模块）----
                     "GPU_CLK_DROP_RATIO", "VRAM_SPILL_MIN_RATIO", "VRAM_SPILL_MIN_MB",
                     "VRAM_SPILL_DELTA_MB", "GPU_DOWNCLOCK_MIN_BASE_MHZ",
-                    "GPU_DOWNCLOCK_MIN_3D_LOAD")
+                    "GPU_DOWNCLOCK_MIN_3D_LOAD",
+                    # ---- v1.1.0 内存-磁盘交换证据链阈值 ----
+                    "SWAP_PAGEFILE_WARN_PCT", "SWAP_PAGEFILE_DANGER_PCT",
+                    "SWAP_PAGES_IN_MIN_MB", "SWAP_PAGES_OUT_MIN_MB",
+                    "SWAP_DISK_LAT_WARN_MS", "SWAP_DISK_LAT_DANGER_MS",
+                    "SWAP_DISK_QUEUE_WARN", "DWM_CPU_WARN_PCT",
+                    "SWAP_COINCIDE_MIN_RATE")
 
 _BOUND_GLOBALS = [globals()]
 

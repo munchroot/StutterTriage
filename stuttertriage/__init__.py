@@ -10,11 +10,13 @@ r"""StutterTriage —— 游戏掉帧（卡顿）一站式体检台
   · etw.py                  ETW 会话管家（避免残留会话导致静默 0 帧）
   · procguard.py            Job Object：父进程结束则子进程必死
   · probes.py               PDH / DXGI / ADL / NVML 的 ctypes 探针
-  · analysis.py             帧存储、卡顿标记、基线、11 维归因
+  · analysis.py             帧存储、卡顿标记、基线、12 维归因
+  · swapdiag.py             内存-磁盘交换证据链（pagefile/磁盘/DWM 的可证伪判定）
+  · perfmon.py              perfmon 采集模板 + CSV 解析 + 帧日志时间对齐
   · stats.py                纯统计函数（P99 / 1% Low / 滚动中位数）
   · ui/                     PyQt6 界面（主窗口、五个页面、图表、皮肤）
   · config.py               配置外部化（阈值、主题、热键）
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["__version__"]
