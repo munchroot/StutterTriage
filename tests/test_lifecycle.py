@@ -22,7 +22,8 @@ import threading
 import subprocess
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import numpy as np
 from PyQt6 import QtWidgets
@@ -38,7 +39,8 @@ def check(name, cond, detail=""):
         fails.append(name)
 
 
-PM = r"F:\Desktop\CapFrameX-1.9.2_beta\source\CapFrameX.PresentMonInterface\PresentMon\CX-PresentMon-2.6.1-x64.exe"
+PM = os.path.join(ROOT, "external", "PresentMon", "PresentMon-x64.exe")
+IS_ADMIN = bool(FL.is_admin())
 
 
 # ==============================================================================
@@ -103,7 +105,13 @@ for _try in range(12):
     if not leftover:
         break
 print("   残留 StutterTriage ETW 会话（本测试新增）: %s" % (leftover if leftover else "无"))
-check("无残留 StutterTriage ETW 会话", len(leftover) == 0, str(leftover[:5]))
+if IS_ADMIN:
+    check("无残留 StutterTriage ETW 会话", len(leftover) == 0, str(leftover[:5]))
+else:
+    # logman stop 需要管理员权限：非管理员环境无法清掉本测试新造的会话，
+    # 这一项按「跳过」报告（本脚本属于 integration 套件，结果单独看）。
+    print("  [SKIP] 无残留 StutterTriage ETW 会话 —— 非管理员无法执行 logman stop"
+          "（残留：%s）" % (leftover[:5] if leftover else "无"))
 
 
 # ==============================================================================
