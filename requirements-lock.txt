@@ -1,0 +1,23 @@
+# StutterTriage 构建/发布依赖锁 —— CI 与正式构建都用这一份
+#
+# 用途：
+#   python -m pip install -r requirements-lock.txt
+#   pwsh -File build_tools\build_exe.ps1 -Release -Tag v1.1.2
+#
+# 说明：
+#   · 这是**精确锁定**版本，保证「同一 tag 在任何机器上构建出同一套组件」。
+#   · 日常开发仍可用 requirements.txt（版本范围，便于升级验证）；
+#     升级依赖后请同步更新本文件，并跑一遍 scripts/test.ps1。
+#   · PyQt6-Qt6 / PyQt6-sip 是 PyQt6 的运行期依赖，必须一起锁，
+#     否则 pip 可能解析到不同的 Qt 发行版。
+#   · PyInstaller 与 hooks-contrib 属于构建期依赖，不进产物以外的地方。
+
+PyQt6==6.12.0
+PyQt6-Qt6==6.12.0
+PyQt6-sip==13.13.0
+pyqtgraph==0.14.0
+numpy==2.4.6
+
+# ---- 仅在打包时需要 ----
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
