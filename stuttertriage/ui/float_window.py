@@ -17,13 +17,25 @@ setWindowFlags 都是 GUI 线程专属操作；主窗口本来就在 UI 定时�
 再加锁或自己起线程只会引入静默丢帧，收益为负。
 """
 
+import ctypes
 import traceback
 
 from PyQt6 import QtCore, QtGui, QtWidgets
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from .. import theme as T
+
+try:
+    # SetWindowPos 的 HWND_TOPMOST(=-1) / SWP_* 标志：Qt 的
+    # WindowStaysOnTopHint 只是建窗时给一次 WS_EX_TOPMOST；全屏独占游戏
+    # 会创建自己的置顶层把它压下去，这里用原生 API 异步"满血"重置顶。
+    _SWP_NOMOVE = 0x0002
+    _SWP_NOSIZE = 0x0001
+    _SWP_NOACTIVATE = 0x0010
+    _HWND_TOPMOST = -1
+except Exception:
+    pass
 
 # 徽章文案：(徽章, 采集按钮文案, 采集按钮提示)
 _STATE_TEXT = {
@@ -93,6 +105,29 @@ class FloatWindow(QWidget):
         self.set_state({})
         self._apply_layout_mode()
         self.setWindowTitle("StutterTriage 浮窗")
+
+        # 【v1.1.3 全屏被盖】Qt 只在建窗时设一次 WS_EX_TOPMOST；全屏独占游戏
+        # 会在之后创建自己的置顶层，把浮窗压下去。这里两个手段：
+        #   ① 建窗后用 SetWindowPos 以 NOMOVE|NOSIZE|NOACTIVATE 再置一次顶；
+        #   ② 低频定时器周期性重置顶 —— 兜住"游戏后启动/切全屏"的场景，
+        #      且 NOACTIVATE 保证绝不抢游戏焦点。
+        self._raise_timer = QTimer(self)
+        self._raise_timer.setInterval(4000)
+        self._raise_timer.timeout.connect(self._reassert_topmost)
+        self._raise_timer.start()
+        QtCore.QTimer.singleShot(120, self._reassert_topmost)
+
+    def _reassert_topmost(self):
+        """以原生 SetWindowPos 重新把浮窗顶到最上层（不移动、不抢焦点）。"""
+        if not self.isVisible():
+            return
+        try:
+            hwnd = int(self.winId())
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+                _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ 构建
     def _build_ui(self):
@@ -436,6 +471,12 @@ class FloatWindow(QWidget):
     def _on_close_clicked(self):
         self.hide()
         self.hiddenByUser.emit()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 每次显示后立刻重置顶（0ms / 150ms 双保险，等 winId 就绪）
+        QtCore.QTimer.singleShot(0, self._reassert_topmost)
+        QtCore.QTimer.singleShot(150, self._reassert_topmost)
 
     # ------------------------------------------------------------------ 拖动
     def mousePressEvent(self, event):

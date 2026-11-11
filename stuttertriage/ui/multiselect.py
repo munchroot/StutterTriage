@@ -88,10 +88,27 @@ class MultiSelectGames(QToolButton):
                 continue
             lower.add(s.lower())
             seen.append(s)
-        self._apps = seen
+        # 【v1.1.3 防「卡片抽动」】不再每 2.5s 按字典序整表重排：
+        #   ① 新进程只是**追加**到列表尾部（老顺序永不变化）；
+        #   ② 列表完全没变时直接返回，不重建菜单 —— 菜单重建会导致
+        #      按钮摘要/菜单项闪动，视觉上就是「卡片在抽动」。
+        old_low = [a.lower() for a in self._apps]
+        new_low = [a.lower() for a in seen]
+        if old_low == new_low:
+            return
+        if set(new_low) >= set(old_low):
+            merged = list(self._apps)
+            known = set(old_low)
+            for s in seen:
+                if s.lower() not in known:
+                    merged.append(s)
+                    known.add(s.lower())
+            self._apps = merged
+        else:
+            self._apps = seen
         if keep:
             want = {c.lower() for c in self._checked}
-            self._checked = [a for a in seen if a.lower() in want]
+            self._checked = [a for a in self._apps if a.lower() in want]
         else:
             self._checked = []
         self._rebuild_menu()
@@ -148,7 +165,7 @@ class MultiSelectGames(QToolButton):
             empty.setEnabled(False)
 
         m.addSeparator()
-        add_manual = m.addAction("＋ 手动添加进程名 / <unknown>…")
+        add_manual = m.addAction("＋ 从文件选择游戏 exe / 手动输入…")
         add_manual.triggered.connect(self._prompt_manual)
         clear = m.addAction("清空选择（回到自动锁定）")
         clear.triggered.connect(lambda _c=False: self._choose_auto())
@@ -172,13 +189,30 @@ class MultiSelectGames(QToolButton):
         self.selectionChanged.emit([])
 
     def _prompt_manual(self):
-        text, ok = QInputDialog.getText(
-            self, "手动添加游戏进程",
-            "输入进程名（例：TslGame.exe）或 <unknown>：\n"
-            "提示：全屏独占的游戏有时会以 <unknown> 上报，勾上它即可追踪。")
-        if not ok:
-            return
-        name = _normalize_name(text)
+        # 【v1.1.3 用户反馈】手动添加不该让用户自己拼进程名：
+        # 直接打开文件浏览器选任意 exe；找不到（全屏独占/受保护进程）
+        # 时再允许手输，两种入口都保留。
+        try:
+            from PyQt6.QtWidgets import QFileDialog
+            path, _flt = QFileDialog.getOpenFileName(
+                self, "选择游戏主程序（exe）",
+                "", "可执行文件 (*.exe);;所有文件 (*.*)")
+        except Exception:
+            path = ""
+        if path:
+            base = (path.replace("\\", "/").rsplit("/", 1)[-1]).strip()
+            name = _normalize_name(base) or base
+        else:
+            name = ""
+        if not name:
+            # 取消选文件 → 退回手动输入（给 <unknown> 这类枚举不到的目标留口子）
+            text, ok = QInputDialog.getText(
+                self, "手动添加游戏进程",
+                "也可以直接输入进程名（例：TslGame.exe）或 <unknown>：\n"
+                "提示：全屏独占的游戏有时会以 <unknown> 上报，勾上它即可追踪。")
+            if not ok:
+                return
+            name = _normalize_name(text)
         if not name:
             return
         # 手动添加的直接加入已勾选（即使它不在有窗口列表里）

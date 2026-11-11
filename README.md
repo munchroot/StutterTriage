@@ -3,7 +3,7 @@
 **Windows 游戏卡顿（掉帧）一站式体检台**
 把「帧率掉了」翻译成一句人话，再给你一招解决建议。
 
-![version](https://img.shields.io/badge/version-1.1.2-2ea043)
+![version](https://img.shields.io/badge/version-1.1.3-2ea043)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 

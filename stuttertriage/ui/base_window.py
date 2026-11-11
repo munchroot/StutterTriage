@@ -50,6 +50,7 @@ from .pages import _set_cells
 from ..utils import BoundedQueue, DIAG, is_na, safe_float
 from ..winadmin import detect_data_source, is_admin, open_dir_in_explorer, presentmon_dir, presentmon_missing_hint, relaunch_as_admin
 from ..theme import bind_globals as _bind_theme_globals
+from .. import theme as T_mod
 _bind_theme_globals(globals())
 from ..consts import bind_globals as _bind_const_globals
 _bind_const_globals(globals())
@@ -1617,16 +1618,24 @@ class StutterTriageWindowBase(QMainWindow):
         return label
 
     def _style_setting_label(self, label, role):
-        """按角色给设置页标签上色（accent=小节标题 / dim=说明 / dim_small=脚注）"""
+        """按角色给设置页标签上色（accent=小节标题 / dim=说明 / dim_small=脚注）
+
+        【v1.1.3 用户反馈：灰色字体太多影响视觉】
+        行标签(dim) 改用**主题主前景色**（白底用墨色、深底用亮白），说明与
+        脚注不再用 dim 原色，而是与 panel 底色做对比度抬升（theme.contrast_on），
+        保证任何主题下都读得清，同时保留"层级弱于标题"的观感。
+        """
         try:
             t = CURRENT_THEME
             if role == "accent":
                 label.setStyleSheet(
                     "color: %s; font-size: 11px; font-weight: bold;" % t.accent)
             elif role == "dim_small":
-                label.setStyleSheet("color: %s; font-size: 10px;" % t.dim)
+                note = T_mod.contrast_on(t.dim, t.panel, need=0.34, steps=4)
+                label.setStyleSheet("color: %s; font-size: 10px;" % note)
             else:
-                label.setStyleSheet("color: %s; font-size: 11px;" % t.dim)
+                label.setStyleSheet(
+                    "color: %s; font-size: 11px; font-weight: 500;" % t.fg)
         except Exception:
             pass
 

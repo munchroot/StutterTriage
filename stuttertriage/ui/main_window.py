@@ -913,14 +913,46 @@ class StutterTriageWindow(StutterTriageWindowBase):
             has_unknown = any((f.app or "") == "<unknown>" for f in self.store.frames)
         except Exception:
             has_unknown = False
+        # 【v1.1.3】横幅不放按钮，但在文案里给出**确切动作**，并把「没采集到」
+        # 时实际存在的候选进程收集起来交给下面的一键按钮。
+        self._idle_candidate = None
         if started and has_unknown:
+            self._idle_candidate = "<unknown>"
             self.banner_text.setText(
                 "🟡 检测到 <unknown> 产帧 —— 多半是全屏独占的游戏（如 GTA5）："
-                "请点左侧「游戏」→ 手动添加 <unknown>，即可把它当游戏追踪")
+                "点左侧「游戏」→ 勾选 <unknown>，即可把它当游戏追踪")
         elif started:
-            self.banner_text.setText(
-                "🟡 未检测到游戏进程 · 桌面合成帧(dwm)已忽略 —— "
-                "请用左侧「游戏」菜单手动勾选，或手动添加进程名 / <unknown>")
+            # 【v1.1.3 采集不到】关键线索：PresentMon 明明在产帧、但用户勾的名字
+            # 一个都不在帧流里 —— 这时点名帧流里真实存在的进程，而不是笼统一句
+            #「请手动勾选」。勾了不存在的名字 = 永远 0 帧，这正是
+            #「选了进程却采集不到」的主要根因（进程大小写/名字对不上）。
+            real = []
+            try:
+                seen_l = set()
+                for f in reversed(self.store.frames):
+                    a = (f.app or "").strip()
+                    if a and a.lower() not in seen_l and a != "<unknown>":
+                        seen_l.add(a.lower())
+                        real.append(a)
+                    if len(real) >= 5:
+                        break
+            except Exception:
+                real = []
+            sel = [s for s in (getattr(self, "target_apps", None) or [])
+                   if s and s.lower() != "<unknown>"]
+            picked_missing = bool(sel) and real and not any(
+                r.lower() in {s.lower() for s in sel} for r in real)
+            if picked_missing and real:
+                self._idle_candidate = real[0]
+                self.banner_text.setText(
+                    "🟡 已勾选的进程当前没有产帧 —— 帧流里实际存在的是「%s」等："
+                    "请点左侧「游戏」改勾这些进程（自动锁定也行）"
+                    % "、".join(real[:3]))
+            else:
+                self.banner_text.setText(
+                    "🟡 未检测到游戏帧 —— 请点左侧「游戏」手动勾选，"
+                    "或「从文件选择游戏 exe」；全屏独占游戏请勾 <unknown>；"
+                    "仍不行请以管理员身份运行")
         else:
             self.banner_text.setText("🟡 未开始采集 —— 点左侧「▶ 开始采集」开始采样")
         self._set_style(self.banner_frame, self._banner_qss(CURRENT_THEME.warn))
@@ -1060,7 +1092,9 @@ class StutterTriageWindow(StutterTriageWindowBase):
     def _toggle_fps_mode(self):
         self._fps_mode = MODE_MS if self._fps_mode == MODE_FPS else MODE_FPS
         self.fps_chart.set_mode(self._fps_mode)
-        self.btn_fps_mode.setText("ms 视角" if self._fps_mode == MODE_MS else "FPS 视角")
+        # 【v1.1.3】按钮写「点完会变成什么」，自解释、不用猜缩写
+        self.btn_fps_mode.setText(
+            "切到帧耗时视角" if self._fps_mode == MODE_FPS else "切回帧率视角")
 
     def _apply_theme(self, theme, persist=True):
         """
