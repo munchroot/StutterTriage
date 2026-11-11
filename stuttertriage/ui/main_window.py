@@ -1092,9 +1092,8 @@ class StutterTriageWindow(StutterTriageWindowBase):
     def _toggle_fps_mode(self):
         self._fps_mode = MODE_MS if self._fps_mode == MODE_FPS else MODE_FPS
         self.fps_chart.set_mode(self._fps_mode)
-        # 【v1.1.3】按钮写「点完会变成什么」，自解释、不用猜缩写
-        self.btn_fps_mode.setText(
-            "切到帧耗时视角" if self._fps_mode == MODE_FPS else "切回帧率视角")
+        # 【v1.1.3】按钮保持「FPS / ms」原文案（用户澄清）；含义由 tooltip 解释
+        self.btn_fps_mode.setText("FPS / ms")
 
     def _apply_theme(self, theme, persist=True):
         """
