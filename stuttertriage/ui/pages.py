@@ -249,15 +249,15 @@ class FpsOverviewPage(_Page):
         bar = QHBoxLayout()
         bar.setSpacing(8)
         bar.addStretch()
-        # 【v1.1.3】用户澄清：按钮保持「FPS / ms」原文案；不理解的问题
-        # 由 tooltip 用大白话解释，不再改按钮文字。
-        self.btn_fps_mode = QPushButton("FPS / ms")
+        # 【v1.1.3 用户澄清】按钮直接显示**当前视角**：FPS 状态就写「FPS」，
+        # ms 状态就写「ms」；点一下切到另一个。不再是「FPS / ms」连写。
+        self.btn_fps_mode = QPushButton("FPS")
         self.btn_fps_mode.setObjectName("NavButton")
         self.btn_fps_mode.setCheckable(True)
         self.btn_fps_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_fps_mode.setToolTip(
-            "切换纵轴：实时帧数 FPS（每秒渲染多少帧，越高越流畅）↔ "
-            "帧耗时 ms（每帧用了多少毫秒，越低越流畅；附 16.7/33.3ms 参考线，"
+            "当前纵轴：FPS（每秒渲染多少帧，越高越流畅）。点击切到 ms"
+            "（每帧用了多少毫秒，越低越流畅；附 16.7/33.3ms 参考线，"
             "高于 16.7ms≈不足 60FPS）")
         bar.addWidget(self.btn_fps_mode)
         self.btn_jump_drop = QPushButton("⤓ 最近漏帧")

@@ -123,8 +123,11 @@ class MultiSelectGames(QToolButton):
                 continue
             seen.add(s.lower())
             out.append(s)
-        self._checked = out
-        self._rebuild_menu()
+        # 【v1.1.3 防闪动】选择没变时绝不重建菜单：_refresh_processes 每 2.5s
+        # 都会调一次 set_selected，重建会让打开着的菜单整块闪一下。
+        if out != self._checked:
+            self._checked = out
+            self._rebuild_menu()
         if emit:
             self.selectionChanged.emit(self.selected())
 
@@ -180,13 +183,30 @@ class MultiSelectGames(QToolButton):
                 self._checked.append(name)
         else:
             self._checked = [c for c in self._checked if c.lower() != low]
-        self._rebuild_menu()
+        # 【v1.1.3 防闪动】勾选/取消勾选时只更新菜单里对应项的勾选态与
+        # 按钮摘要，**不整菜单重建** —— m.clear()+rebuild 会把正在显示的
+        # 菜单整块撕掉重画，用户看到的就是「卡片闪一下」。
+        self._update_check_states()
+        self._update_text()
         self.selectionChanged.emit(self.selected())
 
     def _choose_auto(self):
-        self._checked = []
-        self._rebuild_menu()
+        if self._checked:
+            self._checked = []
+            # 只清勾选态，不重建（理由同 _toggle）
+            self._update_check_states()
+            self._update_text()
         self.selectionChanged.emit([])
+
+    def _update_check_states(self):
+        """菜单已打开时增量同步各 QAction 的勾选态（不重建菜单、不闪）"""
+        low_set = {c.lower() for c in self._checked}
+        for act in self._menu.actions():
+            txt = act.text()
+            if act.isCheckable() and txt == "自动锁定主游戏（推荐）":
+                act.setChecked(not self._checked)
+            elif act.isCheckable() and txt and not txt.startswith("（") :
+                act.setChecked(txt.lower() in low_set)
 
     def _prompt_manual(self):
         # 【v1.1.3 用户反馈】手动添加不该让用户自己拼进程名：
@@ -220,6 +240,7 @@ class MultiSelectGames(QToolButton):
             self._apps.append(name)
         if not any(name.lower() == c.lower() for c in self._checked):
             self._checked.append(name)
+        # 文件对话框已经关了，此时重建菜单不会闪（菜单本来就没开）
         self._rebuild_menu()
         self.selectionChanged.emit(self.selected())
 
