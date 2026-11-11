@@ -5,6 +5,44 @@
 
 ---
 
+## 未发布 · 文档与构建整备
+
+> 本段不改变功能与诊断口径，只整理仓库的入口、测试与发布链路。版本号留给下一版功能迭代。
+
+### 文档
+- 首页精简为「下载 / 系统要求 / 首次采集三步 / 功能亮点 / 已知限制 / 文档」，
+  目录细节、测试分类、构建说明全部迁到 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+- 踩坑、实测结论与口径说明迁到 [docs/NOTES.md](docs/NOTES.md)；
+  新增 [CONTRIBUTING.md](CONTRIBUTING.md)、[docs/RELEASE_TEMPLATE.md](docs/RELEASE_TEMPLATE.md)
+  与 `.github/ISSUE_TEMPLATE/bug_report.md`。
+- 修正文档漂移：测试脚本数量只由 `scripts/test.ps1 -List` 给出（不再一处写 18、一处写 14）；
+  构建体积/耗时标注为 **v1.0.0 历史实测**；`render_preview.py` 统一由 `preview` 套件运行。
+
+### 测试
+- 新增统一入口 `scripts/test.ps1`：本地与 CI 同一条命令，逐脚本打印通过/失败/跳过，
+  汇总检查项数量，以首个失败脚本的退出码结束，并支持单脚本超时。
+- 套件拆分为 `core`（离线回归，CI 默认）/ `integration`（真实 ETW、需管理员）/
+  `preview`（渲染预览图，需真实桌面）；集成结果单独报告，不阻塞普通提交。
+- CI 改用该入口，去掉重复的 `test_static_integrity.py` 步骤；新增可手动触发的
+  integration 任务。
+- `tests/test_lifecycle.py` 移除写死的本机 CapFrameX PresentMon 路径；
+  「无残留 ETW 会话」在非管理员环境改为 `[SKIP]` 报告，不再误判为失败。
+
+### 构建与发布
+- 构建环境改为**干净 venv**（不再 `--system-site-packages`），依赖按
+  `requirements-lock.txt` 精确安装；新增 `build_tools/check_version.py` 校验
+  tag / `__version__` / PE 版本资源 / CHANGELOG / README 徽章一致。
+- `build_exe.ps1 -Release`：缺内置 PresentMon 直接失败，打包后核对 EXE 的 PE 版本，
+  输出 `dist/SHA256SUMS.txt` 与 `dist/THIRD_PARTY.md`。
+- 新增 `.github/workflows/release.yml`：tag 触发 → 跑 core 测试 → 发布构建 →
+  上传 EXE、校验值、第三方声明并创建 Release。
+
+### 第三方声明
+- `THIRD_PARTY.md` 换成 PresentMon v2.6.0 官方发布页/资产链接与 SHA-256（已与仓库内文件核对），
+  并按实际构建产物清点随包 Qt 模块与插件清单。
+
+---
+
 ## v1.1.2 · 2026-11-11
 
 **主题：把「看得见」和「抓得到」补齐**（对应玩家实机反馈）
